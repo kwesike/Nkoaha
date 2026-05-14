@@ -1,0 +1,148 @@
+/* =========================
+   AUTH CARD
+========================= */
+.auth-container {
+  width: 100%;
+  max-width: min(420px, 92vw);
+  background: var(--white);
+  padding: 32px;
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.08);
+}
+
+.auth-message {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--primary-purple);
+}
+
+
+/* =========================
+   LOGO
+========================= */
+.auth-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.auth-logo img {
+  height: 106px;
+}
+
+/* =========================
+   HEADINGS
+========================= */
+.auth-container h2 {
+  text-align: center;
+  color: var(--primary-purple);
+  font-size: 1.4rem;
+  margin-bottom: 6px;
+}
+
+.auth-subtitle {
+  text-align: center;
+  font-size: 0.9rem;
+  color: #6b6b6b;
+  margin-bottom: 24px;
+}
+
+/* =========================
+   INPUTS
+========================= */
+.input-group {
+  margin-bottom: 16px;
+}
+
+.input-group label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.input-group input {
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  font-size: 1rem;
+}
+
+/* =========================
+   ACTIONS
+========================= */
+.auth-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 20px;
+}
+
+.auth-actions span {
+  font-size: 0.85rem;
+  color: var(--primary-purple);
+  cursor: pointer;
+}
+
+.auth-actions span:hover {
+  text-decoration: underline;
+}
+
+/* =========================
+   BUTTON
+========================= */
+.auth-container button {
+  width: 100%;
+  padding: 14px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(
+    to right,
+    var(--primary-purple),
+    var(--accent-purple)
+  );
+  color: var(--white);
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+/* =========================
+   FOOTER
+========================= */
+.auth-footer {
+  margin-top: 22px;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.auth-footer span {
+  color: var(--primary-purple);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-footer span:hover {
+  text-decoration: underline;
+}
+
+/* =========================
+   RESPONSIVE SCALE-UP
+========================= */
+@media (min-width: 768px) {
+  .auth-container {
+    padding: 40px;
+  }
+}
+@media (min-width: 640px) {
+  .auth-container {
+    max-width: 480px;
+    padding: 40px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .auth-container {
+    max-width: 520px;
+  }
+}

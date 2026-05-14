@@ -1,0 +1,141 @@
+/* ================================================
+   NKOAHA — DASHBOARD LAYOUT
+   Topbar: fixed 56px at top
+   Sidebar: collapsible, sits left
+   Content: scrollable, centered
+================================================ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* ── Root shell ── */
+.dashboard-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: #f5f3ef;
+}
+
+/* ── Topbar: fixed across the top ── */
+.dashboard-layout > header.tb-root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  z-index: 100;
+  flex-shrink: 0;
+}
+
+/* ── Body: fills remaining height below topbar ── */
+.dashboard-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  margin-top: 56px;
+  height: calc(100vh - 56px);
+}
+
+/* ── Sidebar: fixed height, no shrink ── */
+.dashboard-body > aside.sb-root {
+  flex-shrink: 0;
+  height: 100%;
+  position: relative;
+  z-index: 40;
+}
+
+/* ── Content area: scrollable ── */
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #f5f3ef;
+  display: flex;
+  flex-direction: column;
+  align-items: center;  /* centres all page content horizontally */
+}
+
+/* Every direct page root gets max-width and is centred */
+.dashboard-content > * {
+  width: 100%;
+  max-width: 1100px;
+}
+
+/* ── Prose Mirror editor ── */
+.ProseMirror {
+  outline: none;
+  min-height: 250px;
+}
+
+/* ── Legacy card styles (used by dashboards) ── */
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+}
+
+.card h1 {
+  margin-top: 10px;
+  font-size: 28px;
+  color: #333;
+}
+
+.recent-activities {
+  margin-top: 40px;
+  background: white;
+  padding: 20px;
+  border-radius: 14px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.activity-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.activity-item:last-child {
+  border-bottom: none;
+}
+
+/* ── Doc canvas (legacy) ── */
+.document-canvas {
+  position: relative;
+  min-height: 600px;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* ── Role badge ── */
+.role-badge {
+  font-size: 11px;
+  background: #eef2ff;
+  color: #4338ca;
+  padding: 4px 8px;
+  border-radius: 12px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .dashboard-content > * {
+    max-width: 100%;
+  }
+}
