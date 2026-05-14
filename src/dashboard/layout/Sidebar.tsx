@@ -420,7 +420,6 @@ export default function Sidebar({ role }: SidebarProps) {
     if (role === "individual") return [
       { label: "Overview",  icon: <Icons.Overview />,  path: "/dashboard/individualdashboard" },
       { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/individual" },
-      { label: "Send",      icon: <Icons.Send />,      path: "/dashboard/send" },
       { label: "Inbox",     icon: <Icons.Inbox />,     path: "/dashboard/inbox/inboxpage" },
       { label: "Billing",   icon: <Icons.Billing />,   path: "/dashboard/billing" },
       { label: "Settings",  icon: <Icons.Settings />,  path: "/dashboard/settings" },
@@ -438,7 +437,6 @@ export default function Sidebar({ role }: SidebarProps) {
     return [
       { label: "Overview",  icon: <Icons.Overview />,  path: "/dashboard/organizationmembersdashboard" },
       { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/member" },
-      { label: "Send",      icon: <Icons.Send />,      path: "/dashboard/send" },
       { label: "Inbox",     icon: <Icons.Inbox />,     path: "/dashboard/inbox/inboxpage" },
       { label: "Settings",  icon: <Icons.Settings />,  path: "/dashboard/settings" },
     ];

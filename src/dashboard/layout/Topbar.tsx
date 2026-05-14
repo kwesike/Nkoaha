@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import logo from "../../assets/nkoaha-logo.png";
 import { useNavigate } from "react-router-dom";
 
@@ -60,7 +60,6 @@ const PAGE_TITLES: Record<string, string> = {
   individual:                    "Documents",
   organization:                  "Documents",
   member:                        "Documents",
-  send:                          "Send",
   inboxpage:                     "Inbox",
   inbox:                         "Inbox",
   billing:                       "Billing",
