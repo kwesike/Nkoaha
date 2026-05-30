@@ -71,6 +71,14 @@ const STYLES = `
   .pp-modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
   @keyframes shimmer{0%{background-position:-600px 0}100%{background-position:600px 0}}
   .pp-skel{background:linear-gradient(90deg,#e9e7e4 25%,#f0ede8 50%,#e9e7e4 75%);background-size:600px 100%;animation:shimmer 1.5s infinite;border-radius:6px}
+  /* Visibility modal */
+  .pp-vis-member{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #faf9f8}
+  .pp-vis-member:last-child{border-bottom:none}
+  .pp-vis-avatar{width:32px;height:32px;border-radius:8px;background:var(--purple-light);color:var(--purple);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .pp-vis-toggle{width:36px;height:20px;border-radius:10px;background:var(--border);cursor:pointer;position:relative;transition:background .2s;flex-shrink:0;border:none}
+  .pp-vis-toggle.on{background:var(--purple)}
+  .pp-vis-toggle::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:#fff;top:3px;left:3px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .pp-vis-toggle.on::after{left:19px}
 `;
 
 export default function PartnershipsPage() {
@@ -86,6 +94,10 @@ export default function PartnershipsPage() {
   const [msg, setMsg]                   = useState<{type:"success"|"error"|"info";text:string}|null>(null);
   const [sending, setSending]           = useState(false);
   const [actioning, setActioning]       = useState<string|null>(null);
+  const [showVisibility, setShowVisibility] = useState<Partnership|null>(null);
+  const [myMembers, setMyMembers]           = useState<any[]>([]);
+  const [visibleIds, setVisibleIds]         = useState<Set<string>>(new Set());
+  const [savingVis, setSavingVis]           = useState(false);
 
   useEffect(() => {
     const id = "pp-styles";
@@ -214,10 +226,68 @@ export default function PartnershipsPage() {
     setSearching(false);
   }
 
+  async function loadVisibility(p: Partnership) {
+    setShowVisibility(p);
+    // Load my members
+    const{data:mems}=await supabase.from("profiles")
+      .select("id,email,status").eq("organization_id",myOrgId);
+    setMyMembers(mems||[]);
+    // Load current visibility settings
+    const{data:vis}=await supabase.from("partnership_member_visibility")
+      .select("member_id,visible").eq("partnership_id",p.id).eq("org_id",myOrgId);
+    const visSet=new Set<string>();
+    if(vis&&vis.length>0){
+      vis.filter((v:any)=>v.visible).forEach((v:any)=>visSet.add(v.member_id));
+    } else {
+      // Default: all members visible
+      (mems||[]).forEach((m:any)=>visSet.add(m.id));
+    }
+    setVisibleIds(visSet);
+  }
+
+  async function saveVisibility() {
+    if(!showVisibility) return;
+    setSavingVis(true);
+    // Upsert visibility for each member
+    for(const m of myMembers){
+      await supabase.from("partnership_member_visibility").upsert({
+        partnership_id: showVisibility.id,
+        org_id:         myOrgId,
+        member_id:      m.id,
+        visible:        visibleIds.has(m.id),
+      },{ onConflict:"partnership_id,org_id,member_id" });
+    }
+    setSavingVis(false);
+    setShowVisibility(null);
+  }
+
   async function sendRequest() {
     if (!foundOrg || !myOrgId) return;
     setSending(true); setMsg(null);
     const { data: { user } } = await supabase.auth.getUser(); if (!user) return;
+
+    // ── Enforce partnership limit from subscription ──
+    const { data: sub } = await supabase.from("subscriptions")
+      .select("partner_limit")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (sub?.partner_limit !== null && sub?.partner_limit !== undefined) {
+      const { count: activePartners } = await supabase.from("organization_partnerships")
+        .select("id", { count: "exact", head: true })
+        .or(`requester_id.eq.${myOrgId},partner_id.eq.${myOrgId}`)
+        .eq("status", "accepted");
+      if ((activePartners || 0) >= sub.partner_limit) {
+        setMsg({
+          type: "error",
+          text: `Your Starter plan allows ${sub.partner_limit} active partnership at a time. Upgrade to Growth or Enterprise for unlimited partnerships.`,
+        });
+        setSending(false); return;
+      }
+    }
 
     const { error } = await supabase.from("organization_partnerships").insert({
       requester_id: myOrgId,
@@ -440,15 +510,64 @@ export default function PartnershipsPage() {
                     </button>
                   )}
                   {p.status==="accepted" && (
-                    <button className="pp-btn delink" disabled={actioning===p.id} onClick={()=>endPartnership(p)}>
-                      {actioning===p.id ? "…" : "Delink"}
-                    </button>
+                    <>
+                      <button className="pp-btn" onClick={()=>loadVisibility(p)} style={{color:"var(--purple)",borderColor:"var(--purple)"}}>
+                        👥 Visibility
+                      </button>
+                      <button className="pp-btn delink" disabled={actioning===p.id} onClick={()=>endPartnership(p)}>
+                        {actioning===p.id ? "…" : "Delink"}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
             </div>
           ))}
         </div>
+
+        {/* Member Visibility Modal */}
+        {showVisibility && (
+          <div className="pp-backdrop" onClick={()=>setShowVisibility(null)}>
+            <div className="pp-modal" style={{maxHeight:"80vh",overflow:"auto"}} onClick={e=>e.stopPropagation()}>
+              <div className="pp-modal-title">Member Visibility</div>
+              <div className="pp-modal-sub">
+                Choose which of <strong>your</strong> members are visible to <strong>{showVisibility.partner_org_name}</strong>.
+                Hidden members cannot be selected as recipients when routing documents.
+              </div>
+              <div style={{marginBottom:16}}>
+                {myMembers.length===0 && <p style={{fontSize:13,color:"var(--muted)",textAlign:"center",padding:"16px 0"}}>No members yet</p>}
+                {myMembers.map((m:any)=>(
+                  <div key={m.id} className="pp-vis-member">
+                    <div className="pp-vis-avatar">{m.email?.[0]?.toUpperCase()}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:500,color:"var(--text)"}}>{m.email?.split("@")[0]}</div>
+                      <div style={{fontSize:11,color:"var(--muted)"}}>{m.email}</div>
+                    </div>
+                    <button
+                      className={`pp-vis-toggle ${visibleIds.has(m.id)?"on":""}`}
+                      onClick={()=>{
+                        setVisibleIds(prev=>{
+                          const n=new Set(prev);
+                          if(n.has(m.id)) n.delete(m.id); else n.add(m.id);
+                          return n;
+                        });
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div style={{fontSize:12,color:"var(--muted)",background:"var(--bg)",padding:"8px 12px",borderRadius:8,marginBottom:12}}>
+                {visibleIds.size} of {myMembers.length} members visible to {showVisibility.partner_org_name}
+              </div>
+              <div className="pp-modal-footer">
+                <button className="pp-modal-btn ghost" onClick={()=>setShowVisibility(null)}>Cancel</button>
+                <button className="pp-modal-btn primary" onClick={saveVisibility} disabled={savingVis}>
+                  {savingVis?"Saving…":"Save Visibility"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* New Partnership Modal */}
         {showModal && (

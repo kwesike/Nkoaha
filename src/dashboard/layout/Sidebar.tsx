@@ -395,9 +395,10 @@ export default function Sidebar({ role }: SidebarProps) {
 
       await fetchCount();
 
-      // Real-time subscription — badge updates instantly when new notification arrives
+      // Real-time subscription — unique channel name per user prevents StrictMode double-mount error
+      const channelName = `inbox-badge:${user.id}:${Date.now()}`;
       channel = supabase
-        .channel("inbox-badge")
+        .channel(channelName)
         .on("postgres_changes", {
           event:  "INSERT",
           schema: "public",
@@ -436,7 +437,7 @@ export default function Sidebar({ role }: SidebarProps) {
     ];
     return [
       { label: "Overview",  icon: <Icons.Overview />,  path: "/dashboard/organizationmembersdashboard" },
-      { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/member" },
+      { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/member" },   
       { label: "Inbox",     icon: <Icons.Inbox />,     path: "/dashboard/inbox/inboxpage" },
       { label: "Settings",  icon: <Icons.Settings />,  path: "/dashboard/settings" },
     ];

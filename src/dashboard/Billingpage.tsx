@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase } from ".././lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 /* ─── Currency conversion (approximate rates) ─── */
@@ -17,15 +17,15 @@ function fmt(ngn: number, currency: Currency): string {
 /* ─── Plans ─── */
 const ORG_PLANS = [
   {
-    id: "org_starter", name: "Starter", members: "Up to 20 members",
-    monthly: 35000, yearly: 95000,
-    features: ["Up to 20 team members","Unlimited document uploads","Full routing chains","Partnership linking","Audit log","Email support"],
+    id: "org_starter", name: "Starter", members: "Up to 10 members",
+    monthly: 30000, yearly: 90000,
+    features: ["Up to 10 team members","100 document uploads","Full routing chains","1 partnership max","Audit log","Email support"],
     color: "#7c3aed", bg: "#ede9fe",
   },
   {
-    id: "org_growth", name: "Growth", members: "Up to 100 members",
-    monthly: 75000, yearly: 225000,
-    features: ["Up to 100 team members","Everything in Starter","Priority support","Advanced audit logs","Multiple partnerships","API access"],
+    id: "org_growth", name: "Growth", members: "Up to 50 members",
+    monthly: 70000, yearly: 210000,
+    features: ["Up to 50 team members","500 document uploads","Everything in Starter","Unlimited partnerships","Priority support + live chat","Advanced audit logs"],
     color: "#2563eb", bg: "#dbeafe",
     popular: true,
   },
@@ -177,7 +177,7 @@ export default function BillingPage() {
 
     // Fetch active subscription
     const { data: sub } = await supabase.from("subscriptions")
-      .select("plan_id,status,expires_at,member_limit,doc_quota")
+      .select("plan_id,status,expires_at,member_limit,doc_quota,partner_limit,org_doc_limit")
       .eq("user_id", user.id)
       .eq("status", "active")
       .order("created_at", { ascending: false })
@@ -221,7 +221,7 @@ export default function BillingPage() {
       customizations: {
         title:       "NkoAha",
         description: `${plan.name} Plan`,
-        logo:        "https://nkoaha.com/nkoaha-logo.png",
+        logo:        "https://nkoaha.com/logo.png",
       },
       callback: async (response: any) => {
         if (response.status === "successful" || response.status === "completed") {
@@ -254,10 +254,17 @@ export default function BillingPage() {
 
     // Member limit per plan
     const memberLimitMap: Record<string,number|null> = {
-      org_starter: 20, org_growth: 100, org_enterprise: null,
+      org_starter: 10, org_growth: 50, org_enterprise: null,
     };
     const docQuotaMap: Record<string,number|null> = {
       ind_daily: 10, ind_weekly: 30, ind_monthly: 50, ind_yearly: null,
+    };
+    // Partnership limit per org plan: Starter=1, Growth=unlimited, Enterprise=unlimited
+    const partnerLimitMap: Record<string,number|null> = {
+      org_starter: 1, org_growth: null, org_enterprise: null,
+    };
+    const orgDocLimitMap: Record<string,number|null> = {
+      org_starter: 100, org_growth: 500, org_enterprise: null,
     };
 
     let orgId: string | null = null;
@@ -273,25 +280,39 @@ export default function BillingPage() {
       .eq('status', 'active');
 
     await supabase.from('subscriptions').insert({
-      user_id:      user.id,
-      org_id:       orgId,
-      plan_id:      plan.id,
-      plan_type:    role === 'organization' ? 'organization' : 'individual',
-      status:       'active',
-      member_limit: memberLimitMap[plan.id] ?? null,
-      doc_quota:    docQuotaMap[plan.id] ?? null,
-      period:       planPeriod,
-      amount_ngn:   getPrice(plan),
+      user_id:       user.id,
+      org_id:        orgId,
+      plan_id:       plan.id,
+      plan_type:     role === 'organization' ? 'organization' : 'individual',
+      status:        'active',
+      member_limit:  memberLimitMap[plan.id] ?? null,
+      doc_quota:     docQuotaMap[plan.id] ?? null,
+      partner_limit: partnerLimitMap[plan.id] ?? null,
+      org_doc_limit: orgDocLimitMap[plan.id] ?? null,
+      period:        planPeriod,
+      amount_ngn:    getPrice(plan),
       currency,
-      flw_tx_ref:   txRef,
-      flw_tx_id:    String(txId),
-      expires_at:   expiresAt.toISOString(),
+      flw_tx_ref:    txRef,
+      flw_tx_id:     String(txId),
+      expires_at:    expiresAt.toISOString(),
     });
   }
 
-  function handlePay() {
+  async function handlePay() {
     if (!selectedPlan) return;
     setPaying(true);
+
+    // ── DEMO MODE: bypass Flutterwave, activate plan instantly ──
+    const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
+    if (DEMO_MODE) {
+      await recordSubscription(selectedPlan, "DEMO-TX-"+Date.now(), "DEMO-REF-"+Date.now());
+      alert(`Demo mode: ${selectedPlan.name} plan activated instantly.`);
+      setSelectedPlan(null);
+      setPaying(false);
+      load();
+      return;
+    }
+
     initFlutterwave(selectedPlan);
   }
 
@@ -330,7 +351,11 @@ export default function BillingPage() {
                 {activeSub.plan_id.replace('org_','').replace('ind_','').replace(/^\w/,(c:string)=>c.toUpperCase())} Plan Active
               </div>
               <div className="bl-free-desc">
-                {activeSub.member_limit ? `Up to ${activeSub.member_limit} members` : activeSub.doc_quota ? `${activeSub.doc_quota} documents per period` : "Unlimited"} · Expires {new Date(activeSub.expires_at).toLocaleDateString()}
+                {[
+                  activeSub.member_limit ? `${activeSub.member_limit} members` : "Unlimited members",
+                  activeSub.org_doc_limit ? `${activeSub.org_doc_limit} docs` : activeSub.doc_quota ? `${activeSub.doc_quota} docs/period` : "Unlimited docs",
+                  activeSub.partner_limit === 1 ? "1 partnership" : "Unlimited partnerships",
+                ].join(" · ")} · Expires {new Date(activeSub.expires_at).toLocaleDateString()}
               </div>
             </>) : (<>
               <div className="bl-free-title">You are on the Free Plan</div>

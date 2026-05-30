@@ -15,6 +15,7 @@ interface PdfOverlay {
   type: "text" | "date" | "signature" | "image";
   content: string;
   fontSize: number; // px — user can resize with scroll wheel or +/- buttons
+  step?: number;    // route_order of the recipient who placed this overlay — locked to future recipients
 }
 interface DocumentItem {
   id: string; title: string; fileUrl: string;
@@ -144,6 +145,41 @@ const STYLES = `
   .dp-ctx{position:fixed;background:#fff;border:1px solid var(--border);border-radius:9px;padding:5px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:200;min-width:160px}
   .dp-ctx-item{display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:5px;font-size:13px;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:var(--font);color:var(--text);transition:background .12s}
   .dp-ctx-item:hover{background:var(--accent-light);color:var(--accent)}
+  /* Locked overlay — previous recipient's work */
+  .dp-pdf-overlay-item.locked{cursor:not-allowed!important}
+  .dp-pdf-overlay-item.locked .dp-overlay-resize{display:none!important}
+  .dp-pdf-overlay-item.locked .dp-pdf-overlay-del{display:none!important}
+  /* Comments dialog */
+  .dp-comments-dialog{position:fixed;bottom:80px;right:24px;width:340px;background:#fff;border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.18);border:1px solid var(--border);z-index:250;display:flex;flex-direction:column;overflow:hidden;animation:modal-in .16s ease}
+  .dp-comments-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--accent);color:#fff}
+  .dp-comments-title{font-size:13px;font-weight:600}
+  .dp-comments-close{background:none;border:none;color:#fff;cursor:pointer;font-size:18px;line-height:1;padding:0}
+  .dp-comments-body{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;max-height:300px}
+  .dp-comment{max-width:85%;padding:8px 12px;border-radius:10px;font-size:12.5px;line-height:1.5}
+  .dp-comment.mine{background:var(--accent);color:#fff;align-self:flex-end;border-bottom-right-radius:3px}
+  .dp-comment.theirs{background:#f5f3ef;color:var(--text);align-self:flex-start;border-bottom-left-radius:3px}
+  .dp-comment-meta{font-size:10px;opacity:.65;margin-top:3px}
+  .dp-comments-input{padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end}
+  .dp-comments-textarea{flex:1;border:1.5px solid var(--border);border-radius:8px;padding:7px 10px;font-family:var(--font);font-size:12.5px;resize:none;outline:none;max-height:80px;color:var(--text)}
+  .dp-comments-textarea:focus{border-color:var(--accent)}
+  .dp-comments-send{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 12px;font-family:var(--font);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
+  .dp-comments-send:hover{background:var(--accent-dark)}.dp-comments-send:disabled{opacity:.5;cursor:not-allowed}
+  .dp-comments-fab{position:fixed;bottom:24px;right:24px;width:48px;height:48px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:240;transition:all .15s}
+  .dp-comments-fab:hover{background:var(--accent-dark);transform:scale(1.05)}
+  .dp-comments-badge{position:absolute;top:-4px;right:-4px;width:18px;height:18px;background:#dc2626;color:#fff;border-radius:50%;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  /* Auth confirmation modal */
+  .dp-auth-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:300;backdrop-filter:blur(6px)}
+  .dp-auth-modal{background:#fff;border-radius:16px;padding:28px;width:380px;max-width:96vw;box-shadow:0 24px 64px rgba(0,0,0,.22);animation:modal-in .16s ease}
+  .dp-auth-icon{width:48px;height:48px;border-radius:12px;background:#ede9fe;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:22px}
+  .dp-auth-title{font-size:16px;font-weight:700;color:var(--text);text-align:center;margin-bottom:6px}
+  .dp-auth-sub{font-size:12.5px;color:var(--muted);text-align:center;margin-bottom:20px;line-height:1.5}
+  .dp-auth-input{width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:9px;font-family:var(--font);font-size:14px;color:var(--text);outline:none;transition:border-color .15s;margin-bottom:8px}
+  .dp-auth-input:focus{border-color:var(--accent)}
+  .dp-auth-error{font-size:12px;color:#dc2626;background:#fee2e2;padding:8px 12px;border-radius:7px;margin-bottom:12px;text-align:center}
+  .dp-auth-btns{display:flex;gap:8px;margin-top:4px}
+  .dp-auth-btn{flex:1;padding:11px;border-radius:9px;border:none;font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+  .dp-auth-btn.primary{background:var(--accent);color:#fff}.dp-auth-btn.primary:hover{background:var(--accent-dark)}.dp-auth-btn.primary:disabled{opacity:.5;cursor:not-allowed}
+  .dp-auth-btn.ghost{background:var(--bg);color:var(--muted);border:1.5px solid var(--border)}.dp-auth-btn.ghost:hover{background:var(--border)}
 `;
 
 const Ico = {
@@ -449,6 +485,26 @@ export default function DocumentsPage() {
   // Route action state — set when current user is a recipient of the active doc
   const [myRoute, setMyRoute] = useState<{id:string;is_final:boolean;status:string;route_order:number;total_steps:number}|null>(null);
   const [routeActioning, setRouteActioning] = useState(false);
+  // Comments dialog state
+  const [showComments, setShowComments] = useState(false);
+  const [comments, setComments]         = useState<any[]>([]);
+  const [commentText, setCommentText]   = useState("");
+  const [commentSending, setCommentSending] = useState(false);
+  const [currentUserId, setCurrentUserId]   = useState("");
+  const [isInitiator, setIsInitiator]       = useState(false);
+
+  // Returns true if this overlay was placed by a previous recipient and must not be touched
+  const isLocked=(ov:PdfOverlay):boolean=>{
+    if(!myRoute) return false; // owner — nothing locked
+    if(ov.step===undefined||ov.step===null) return false; // legacy overlay — allow
+    return ov.step < myRoute.route_order; // placed by someone earlier in the chain
+  };
+  // Auth confirmation modal for approve actions
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authAction, setAuthAction] = useState<"approve"|"save"|null>(null);
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
   const overlayRefs = useRef<Record<string,HTMLDivElement|null>>({});
   const [editorPages, setEditorPages]       = useState<JSONContent[]>([EMPTY_DOC]);
   const [newDocOverlays, setNewDocOverlays]   = useState<PdfOverlay[]>([]);
@@ -579,7 +635,7 @@ export default function DocumentsPage() {
     pdfCanvasRefs.current=[];docxPdfCanvasRefs.current=[];
 
     const{data,error}=await supabase.from("documents")
-      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready")
+      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready,owner_id")
       .eq("id",doc.id).single();
     if(error){console.error(error);setLoading(false);return;}
 
@@ -588,6 +644,24 @@ export default function DocumentsPage() {
     setHeader(data?.header||"");
     setFooter(data?.footer||"");
     setCurrentPage(1);setSaveStatus("saved");
+
+    // ── Fetch myRoute FIRST so we can use route_order to stamp/lock overlays ──
+    const{data:{user:currentUser}}=await supabase.auth.getUser();
+    let myRouteData:any=null;
+    if(currentUser){
+      const{data:rd}=await supabase.from("document_routes")
+        .select("id,is_final,status,route_order,total_steps")
+        .eq("document_id",doc.id)
+        .eq("recipient_id",currentUser.id)
+        .maybeSingle();
+      myRouteData=rd||null;
+      console.log("[DocumentsPage] myRouteData for doc", doc.id, ":", myRouteData);
+    }
+    // Completed route steps — overlays from these steps must be locked
+    // Any overlay without a step gets stamped as step 0 (owner)
+    const stampOverlays=(ovs:PdfOverlay[]):PdfOverlay[]=>{
+      return ovs.map(o=>({...o, step: o.step !== undefined ? o.step : 0}));
+    };
 
     const fmt=data?.format||doc.format;
 
@@ -601,14 +675,14 @@ export default function DocumentsPage() {
         const loaded=await pdfjs.getDocument({data:new Uint8Array(buf)}).promise;
         setPdfDoc(loaded);setTotalPages(loaded.numPages);
         const saved=data?.annotations;
-        if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.pdfOverlays)setPdfOverlays(p.pdfOverlays);}
+        if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.pdfOverlays)setPdfOverlays(stampOverlays(p.pdfOverlays));}
       }catch(e){console.error(e);}
 
     }else if(fmt==="docx"){
       const savedContent=data?.content?(typeof data.content==="string"?JSON.parse(data.content):data.content):null;
       if(savedContent?.format==="docx-html-edited"&&Array.isArray(savedContent.pages)){
         setDocxHtmlPages(savedContent.pages);setTotalPages(savedContent.pages.length);
-        if(savedContent.overlays) setDocxOverlays(savedContent.overlays);
+        if(savedContent.overlays) setDocxOverlays(stampOverlays(savedContent.overlays));
       }else{
         const html=data?.html_content||"";
         if(html){const pages=splitDocxHtmlIntoPages(html);setDocxHtmlPages(pages);setTotalPages(pages.length);}
@@ -646,24 +720,374 @@ export default function DocumentsPage() {
       const pages=splitJsonIntoPages(raw);setEditorPages(pages);setTotalPages(pages.length);
       // Restore image overlays
       const saved=data?.annotations;
-      if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.newDocOverlays)setNewDocOverlays(p.newDocOverlays);}
+      if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.newDocOverlays)setNewDocOverlays(stampOverlays(p.newDocOverlays));}
     }
     setLoading(false);
-
-    // Check if current user is a recipient of this doc
-    const{data:{user:currentUser}}=await supabase.auth.getUser();
+    // Set myRoute last — after all overlays loaded, so topbar renders correctly
+    setMyRoute(myRouteData);
+    // Track who the current user is relative to this doc
     if(currentUser){
-      const{data:myRouteData}=await supabase.from("document_routes")
-        .select("id,is_final,status,route_order,total_steps")
-        .eq("document_id",doc.id)
-        .eq("recipient_id",currentUser.id)
-        .maybeSingle();
-      setMyRoute(myRouteData||null);
+      setCurrentUserId(currentUser.id);
+      // Initiator = owner of the document
+      const isOwner = data?.owner_id === currentUser.id ||
+        (await supabase.from("documents").select("owner_id").eq("id",doc.id).single()).data?.owner_id === currentUser.id;
+      setIsInitiator(!!isOwner || !myRouteData);
     }
+    // Load comments
+    loadComments(doc.id);
+  };
+
+  /* ── Comments ── */
+  const loadComments=async(docId:string)=>{
+    const{data}=await supabase.from("document_comments")
+      .select("*").eq("document_id",docId).order("created_at",{ascending:true});
+    setComments(data||[]);
+  };
+
+  const sendComment=async()=>{
+    if(!commentText.trim()||!activeDoc)return;
+    setCommentSending(true);
+    const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
+    const{data:prof}=await supabase.from("profiles").select("email").eq("id",user.id).single();
+    // Insert comment
+    await supabase.from("document_comments").insert({
+      document_id: activeDoc.id,
+      sender_id:   user.id,
+      sender_email: prof?.email||user.email||"",
+      message:     commentText.trim(),
+      is_initiator: isInitiator,
+    });
+    // Notify the other party in their inbox
+    // If recipient commenting → notify initiator; if initiator → notify current active recipient
+    if(!isInitiator){
+      // Get document owner
+      const{data:doc}=await supabase.from("documents").select("owner_id,title").eq("id",activeDoc.id).single();
+      if(doc?.owner_id){
+        await supabase.from("activity_logs").insert({
+          user_id:     doc.owner_id,
+          action:      "document_comment",
+          document_id: activeDoc.id,
+          metadata:{
+            document_title: docTitle,
+            sender_email:   prof?.email||user.email||"",
+            message:        commentText.trim().slice(0,100),
+            status:         "pending",
+          },
+        });
+      }
+    } else {
+      // Initiator replying — notify current pending recipient
+      const{data:pendingRoute}=await supabase.from("document_routes")
+        .select("recipient_id").eq("document_id",activeDoc.id).eq("status","pending").maybeSingle();
+      if(pendingRoute?.recipient_id){
+        await supabase.from("activity_logs").insert({
+          user_id:     pendingRoute.recipient_id,
+          action:      "document_comment",
+          document_id: activeDoc.id,
+          metadata:{
+            document_title: docTitle,
+            sender_email:   prof?.email||user.email||"",
+            message:        commentText.trim().slice(0,100),
+            status:         "pending",
+          },
+        });
+      }
+    }
+    setCommentText("");
+    setCommentSending(false);
+    loadComments(activeDoc.id);
+  };
+
+  /* ── Generate Proof certificate ── */
+  const generateProof=async(
+    docId:string, recipientId:string, recipientEmail:string,
+    actionType:string, routeOrder:number, totalSteps:number,
+    sigUrl:string, docTitleStr:string
+  )=>{
+    const now=new Date();
+    const certId=`NKA-${docId.slice(0,6).toUpperCase()}-${recipientId.slice(0,6).toUpperCase()}-${now.getFullYear()}`;
+    const docRef=`DOC-${docId.slice(0,8).toUpperCase()}`;
+    const actionLabel=actionType==="signed"?"Approved & Signed":actionType==="approved"?"Approved & Forwarded":"Declined";
+
+    const proofHtml=`<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>NkoAha Proof Certificate — ${certId}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'DM Sans',sans-serif;background:#f5f3ef;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:40px 20px}
+  .cert{background:#fff;width:780px;max-width:100%;border:1px solid #e7e4df;box-shadow:0 8px 40px rgba(0,0,0,.12);position:relative;overflow:hidden}
+  /* Purple accent bar top */
+  .cert-top-bar{height:8px;background:linear-gradient(90deg,#7c3aed,#a855f7,#2563eb)}
+  /* Watermark */
+  .cert-watermark{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-30deg);font-size:80px;font-weight:900;color:rgba(124,58,237,.04);pointer-events:none;white-space:nowrap;font-family:'DM Serif Display',serif;letter-spacing:.1em}
+  /* Header */
+  .cert-header{display:flex;align-items:center;justify-content:space-between;padding:28px 40px 24px;border-bottom:2px solid #ede9fe}
+  .cert-brand{display:flex;align-items:center;gap:12px}
+  .cert-logo-mark{width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#a855f7);border-radius:11px;display:flex;align-items:center;justify-content:center}
+  .cert-logo-mark svg{display:block}
+  .cert-brand-text{font-size:22px;font-weight:800;color:#7c3aed;letter-spacing:-.02em}
+  .cert-brand-sub{font-size:11px;color:#78716c;margin-top:1px}
+  .cert-cert-label{text-align:right}
+  .cert-cert-title{font-size:13px;font-weight:700;color:#1c1917;text-transform:uppercase;letter-spacing:.1em}
+  .cert-cert-id{font-size:11px;color:#78716c;font-family:monospace;margin-top:4px}
+  /* Declaration */
+  .cert-declaration{padding:28px 40px;text-align:center;border-bottom:1px solid #f5f3ef}
+  .cert-decl-heading{font-family:'DM Serif Display',serif;font-size:22px;color:#1c1917;margin-bottom:8px;font-style:italic}
+  .cert-decl-text{font-size:13.5px;color:#78716c;line-height:1.7;max-width:560px;margin:0 auto}
+  /* Fields */
+  .cert-fields{padding:24px 40px;display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #f5f3ef}
+  .cert-field{padding:12px 0;border-bottom:1px solid #f5f3ef}
+  .cert-field:nth-last-child(-n+2){border-bottom:none}
+  .cert-field-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:4px}
+  .cert-field-value{font-size:14px;font-weight:600;color:#1c1917}
+  .cert-field.full{grid-column:1/-1}
+  /* Action badge */
+  .cert-action-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700}
+  .cert-action-badge.approved{background:#dcfce7;color:#16a34a}
+  .cert-action-badge.forwarded{background:#dbeafe;color:#2563eb}
+  .cert-action-badge.declined{background:#fee2e2;color:#dc2626}
+  /* Signature section */
+  .cert-sig-section{padding:28px 40px;display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid #f5f3ef;gap:20px}
+  .cert-sig-box{flex:1;max-width:240px}
+  .cert-sig-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:10px}
+  .cert-sig-img-wrap{height:64px;border-bottom:2px solid #1c1917;display:flex;align-items:flex-end;padding-bottom:6px;min-width:200px}
+  .cert-sig-img{max-height:56px;object-fit:contain;display:block}
+  .cert-sig-name{font-size:12px;color:#78716c;margin-top:6px}
+  .cert-issuer{text-align:center;flex:1}
+  .cert-issuer-text{font-size:11px;color:#a8a29e;margin-bottom:6px}
+  .cert-issuer-name{font-size:18px;font-weight:900;color:#7c3aed;letter-spacing:.04em}
+  .cert-issuer-sub{font-size:10px;color:#a8a29e;margin-top:2px}
+  .cert-stamp{width:80px;height:80px;border:3px solid #7c3aed;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7c3aed;transform:rotate(-12deg);flex-shrink:0}
+  .cert-stamp-check{font-size:22px;line-height:1}
+  .cert-stamp-text{font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;text-align:center;margin-top:2px}
+  /* Footer */
+  .cert-footer{padding:14px 40px;background:#faf9f8;display:flex;align-items:center;justify-content:space-between}
+  .cert-footer-note{font-size:10px;color:#a8a29e;font-family:monospace}
+  .cert-print-btn{padding:8px 18px;background:#7c3aed;color:#fff;border:none;border-radius:7px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;cursor:pointer}
+  @media print{
+    body{background:#fff;padding:0}
+    .cert{box-shadow:none;border:none;width:100%}
+    .cert-print-btn{display:none}
+    @page{margin:0;size:A4 portrait}
+  }
+</style></head>
+<body>
+<div class="cert">
+  <div class="cert-top-bar"></div>
+  <div class="cert-watermark">NKOAHA</div>
+  <div class="cert-header">
+    <div class="cert-brand">
+      <div class="cert-logo-mark">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+      </div>
+      <div>
+        <div class="cert-brand-text">NkoAha</div>
+        <div class="cert-brand-sub">Document Management Platform</div>
+      </div>
+    </div>
+    <div class="cert-cert-label">
+      <div class="cert-cert-title">Proof of Document Action</div>
+      <div class="cert-cert-id">Certificate No: ${certId}</div>
+    </div>
+  </div>
+
+  <div class="cert-declaration">
+    <div class="cert-decl-heading">Certificate of Document Participation</div>
+    <div class="cert-decl-text">
+      This is to officially declare and certify that the individual named herein has duly participated
+      in the document workflow process on the NkoAha platform, and has performed the action
+      described below in accordance with the established routing chain.
+    </div>
+  </div>
+
+  <div class="cert-fields">
+    <div class="cert-field">
+      <div class="cert-field-label">Recipient Name</div>
+      <div class="cert-field-value">${recipientEmail.split("@")[0]}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Email Address</div>
+      <div class="cert-field-value">${recipientEmail}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Document Title</div>
+      <div class="cert-field-value">${docTitleStr}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Document Reference No.</div>
+      <div class="cert-field-value" style="font-family:monospace;color:#7c3aed">${docRef}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Action Performed</div>
+      <div class="cert-field-value">
+        <span class="cert-action-badge ${actionType==="signed"?"approved":actionType==="approved"?"forwarded":"declined"}">
+          ${actionLabel}
+        </span>
+      </div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Position in Approval Chain</div>
+      <div class="cert-field-value">Step ${routeOrder} of ${totalSteps}${routeOrder===totalSteps?" (Final Approver)":""}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Date & Time of Action</div>
+      <div class="cert-field-value">${now.toLocaleString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric",hour:"2-digit",minute:"2-digit",timeZoneName:"short"})}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Certificate Issued</div>
+      <div class="cert-field-value">${now.toLocaleString("en-US",{year:"numeric",month:"long",day:"numeric"})}</div>
+    </div>
+  </div>
+
+  <div class="cert-sig-section">
+    <div class="cert-sig-box">
+      <div class="cert-sig-label">Signature of Recipient</div>
+      <div class="cert-sig-img-wrap">
+        ${sigUrl
+          ?`<img src="${sigUrl}" class="cert-sig-img" crossorigin="anonymous"/>`
+          :`<span style="font-size:11px;color:#a8a29e;font-style:italic">No signature on file</span>`
+        }
+      </div>
+      <div class="cert-sig-name">${recipientEmail.split("@")[0]} · ${recipientEmail}</div>
+    </div>
+    <div class="cert-issuer">
+      <div class="cert-issuer-text">Certified and Issued by</div>
+      <div class="cert-issuer-name">NkoAha</div>
+      <div class="cert-issuer-sub">Document Management Platform</div>
+    </div>
+    <div class="cert-stamp">
+      <div class="cert-stamp-check">✓</div>
+      <div class="cert-stamp-text">Verified<br/>NkoAha</div>
+    </div>
+  </div>
+
+  <div class="cert-footer">
+    <div class="cert-footer-note">
+      Cert No: ${certId} &nbsp;|&nbsp; Doc Ref: ${docRef} &nbsp;|&nbsp; Issued: ${now.toISOString()} &nbsp;|&nbsp; nkoaha.com
+    </div>
+    <button class="cert-print-btn" onclick="window.print()">🖨️ Print Certificate</button>
+  </div>
+</div>
+</body></html>`;
+
+    // Save proof to DB
+    const{error:proofErr}=await supabase.from("document_proofs").insert({
+      document_id:     docId,
+      recipient_id:    recipientId,
+      recipient_email: recipientEmail,
+      action_type:     actionType,
+      route_order:     routeOrder,
+      total_steps:     totalSteps,
+      signature_url:   sigUrl,
+      proof_html:      proofHtml,
+      actioned_at:     now.toISOString(),
+    });
+    if(proofErr) console.error("Proof save error:", proofErr.message);
+
+    const proofSummary=`${recipientEmail.split("@")[0]} ${actionLabel} "${docTitleStr}" — Step ${routeOrder} of ${totalSteps}`;
+
+    // Notify recipient in inbox with certificate data
+    await supabase.from("activity_logs").insert({
+      user_id:     recipientId,
+      action:      "proof_issued",
+      document_id: docId,
+      metadata:{
+        document_title: docTitleStr,
+        action_type:    actionType,
+        action_label:   actionLabel,
+        cert_id:        certId,
+        doc_ref:        docRef,
+        status:         "pending",
+        proof_summary:  `Your Proof certificate has been issued: ${actionLabel} "${docTitleStr}" (Step ${routeOrder}/${totalSteps})`,
+        proof_html:     proofHtml, // stored so inbox can render/open it
+      },
+    });
+
+    // Notify initiator in inbox
+    const{data:docRow}=await supabase.from("documents").select("owner_id").eq("id",docId).single();
+    if(docRow?.owner_id && docRow.owner_id!==recipientId){
+      await supabase.from("activity_logs").insert({
+        user_id:     docRow.owner_id,
+        action:      "proof_issued",
+        document_id: docId,
+        metadata:{
+          document_title: docTitleStr,
+          action_type:    actionType,
+          action_label:   actionLabel,
+          cert_id:        certId,
+          doc_ref:        docRef,
+          status:         "pending",
+          proof_summary:  proofSummary,
+          proof_html:     proofHtml,
+        },
+      });
+    }
+    return proofHtml;
+  };
+
+  const checkDocLimit=async(userId:string):Promise<boolean>=>{
+    // Returns true if user can create more documents
+    const{data:sub}=await supabase.from("subscriptions")
+      .select("org_doc_limit,doc_quota,plan_type,period")
+      .eq("user_id",userId).eq("status","active")
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+
+    if(!sub) return true; // no subscription = free tier, handled separately
+
+    // Org doc limit (Starter: 45 total)
+    if(sub.org_doc_limit!==null&&sub.org_doc_limit!==undefined){
+      const{count}=await supabase.from("documents")
+        .select("id",{count:"exact",head:true})
+        .eq("owner_id",userId).neq("status","deleted");
+      if((count||0)>=sub.org_doc_limit){
+        alert(`Your Starter plan includes up to ${sub.org_doc_limit} documents. Upgrade to Growth or Enterprise in Billing for unlimited documents.`);
+        return false;
+      }
+    }
+
+    // Individual doc quota (daily/weekly/monthly)
+    if(sub.doc_quota!==null&&sub.doc_quota!==undefined&&sub.plan_type==="individual"){
+      const now=new Date();
+      let since=new Date();
+      if(sub.period==="daily") since=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+      else if(sub.period==="weekly"){since=new Date(now);since.setDate(now.getDate()-7);}
+      else if(sub.period==="monthly"){since=new Date(now);since.setMonth(now.getMonth()-1);}
+      const{count}=await supabase.from("documents")
+        .select("id",{count:"exact",head:true})
+        .eq("owner_id",userId).neq("status","deleted")
+        .gte("created_at",since.toISOString());
+      if((count||0)>=sub.doc_quota){
+        alert(`You have used all ${sub.doc_quota} documents in your ${sub.period} plan. Upgrade or renew in Billing.`);
+        return false;
+      }
+    }
+    return true;
   };
 
   const createNew=async()=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
+    if(!(await checkDocLimit(user.id)))return;
+
+    // ── Enforce org doc limit from subscription ──
+    const{data:sub}=await supabase.from("subscriptions")
+      .select("org_doc_limit,doc_quota,plan_type,expires_at")
+      .eq("user_id",user.id).eq("status","active")
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+
+    if(sub?.org_doc_limit){
+      const{count:docCount}=await supabase.from("documents")
+        .select("id",{count:"exact",head:true})
+        .eq("owner_id",user.id).neq("status","deleted");
+      if((docCount||0)>=sub.org_doc_limit){
+        alert(`Your Starter plan allows up to ${sub.org_doc_limit} documents. You have ${docCount}. Please upgrade your plan in Billing.`);
+        return;
+      }
+    }
+
     const{data,error}=await supabase.from("documents").insert({
       owner_id:user.id,sender_id:user.id,uploaded_by:user.id,
       owner_type:"individual",document_kind:"editor",format:"new",
@@ -680,6 +1104,23 @@ export default function DocumentsPage() {
   const uploadFile=async(file:File)=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     if(!file.name.match(/\.(docx|pdf)$/i)){alert("Only .docx and .pdf files are supported.");return;}
+    if(!(await checkDocLimit(user.id)))return;
+
+    // ── Enforce org doc limit ──
+    const{data:sub}=await supabase.from("subscriptions")
+      .select("org_doc_limit")
+      .eq("user_id",user.id).eq("status","active")
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(sub?.org_doc_limit){
+      const{count:docCount}=await supabase.from("documents")
+        .select("id",{count:"exact",head:true})
+        .eq("owner_id",user.id).neq("status","deleted");
+      if((docCount||0)>=sub.org_doc_limit){
+        alert(`Your Starter plan allows up to ${sub.org_doc_limit} documents. You have ${docCount}. Please upgrade your plan in Billing.`);
+        return;
+      }
+    }
+
     setConverting(true);
     let fileUrl="",htmlContent="",format:DocFormat="new",pages=1;
     try{
@@ -905,6 +1346,47 @@ export default function DocumentsPage() {
   };
 
   /* ── Route action handlers (for recipients) ── */
+  /* ── Auth verify then execute approve ── */
+  const requestApprove=(action:"approve"|"save")=>{
+    setAuthAction(action);
+    setAuthPassword("");
+    setAuthError("");
+    setShowAuthModal(true);
+  };
+
+  const verifyAndApprove=async()=>{
+    if(!authPassword.trim()){setAuthError("Please enter your 6-digit code.");return;}
+    if(authPassword.trim().length!==6||!/^\d+$/.test(authPassword.trim())){
+      setAuthError("Code must be exactly 6 digits."); return;
+    }
+    setAuthLoading(true); setAuthError("");
+    try{
+      // Verify identity using MFA (same flow as MFAVerify.tsx)
+      const{data:factors,error:fe}=await supabase.auth.mfa.listFactors();
+      if(fe||!factors?.totp?.length){
+        setAuthError("No authenticator app set up. Please set up MFA in your account.");
+        setAuthLoading(false); return;
+      }
+      const{error:verifyError}=await supabase.auth.mfa.challengeAndVerify({
+        factorId:factors.totp[0].id,
+        code:authPassword.trim(),
+      });
+      if(verifyError){
+        setAuthError("Incorrect code. Please check your authenticator app and try again.");
+        setAuthLoading(false); return;
+      }
+    }catch(err:any){
+      setAuthError(err.message||"Verification failed. Please try again.");
+      setAuthLoading(false); return;
+    }
+    setAuthLoading(false);
+    setShowAuthModal(false);
+    setAuthPassword("");
+    // Execute the approved action
+    if(authAction==="approve") handleApprove();
+    else if(authAction==="save") handleSaveDoc();
+  };
+
   const handleApprove=async()=>{
     if(!myRoute||!activeDoc)return;
     setRouteActioning(true);
@@ -967,6 +1449,23 @@ export default function DocumentsPage() {
         });
       }
     }
+    // Generate proof certificate for this recipient
+    const{data:{user:u2}}=await supabase.auth.getUser();
+    if(u2){
+      const{data:prof2}=await supabase.from("profiles").select("email,signature_url").eq("id",u2.id).single();
+      const sigUrl2=prof2?.signature_url?await resolveStorageUrl(prof2.signature_url):"";
+      await generateProof(activeDoc.id,u2.id,prof2?.email||u2.email||"","approved",
+        myRoute.route_order,myRoute.total_steps,sigUrl2,docTitle);
+    }
+    // Notify initiator of approval
+    const{data:docForNotif}=await supabase.from("documents").select("owner_id").eq("id",activeDoc.id).single();
+    const{data:{user:u3}}=await supabase.auth.getUser();
+    if(docForNotif?.owner_id&&u3&&docForNotif.owner_id!==u3.id){
+      await supabase.from("activity_logs").insert({
+        user_id:docForNotif.owner_id,action:"document_approved",document_id:activeDoc.id,
+        metadata:{document_title:docTitle,approved_by:u3.email,step:myRoute.route_order,total:myRoute.total_steps,status:"pending"},
+      });
+    }
     setMyRoute({...myRoute,status:"completed"});
     setRouteActioning(false);
     alert("Document approved and forwarded to next recipient.");
@@ -996,16 +1495,37 @@ export default function DocumentsPage() {
     await supabase.from("document_routes").update({status:"completed",actioned_at:new Date().toISOString()}).eq("id",myRoute.id);
     const{data:logRow}=await supabase.from("activity_logs").select("id,metadata").eq("user_id",user.id).eq("document_id",activeDoc.id).eq("action","document_received").maybeSingle();
     if(logRow){await supabase.from("activity_logs").update({metadata:{...logRow.metadata,status:"actioned",actioned_at:new Date().toISOString(),action_type:"save"}}).eq("id",logRow.id);}
+    // Generate proof certificate for final recipient
+    const{data:{user:u4}}=await supabase.auth.getUser();
+    if(u4){
+      const{data:prof4}=await supabase.from("profiles").select("email,signature_url").eq("id",u4.id).single();
+      const sigUrl4=prof4?.signature_url?await resolveStorageUrl(prof4.signature_url):"";
+      await generateProof(activeDoc.id,u4.id,prof4?.email||u4.email||"","signed",
+        myRoute.route_order,myRoute.total_steps,sigUrl4,docTitle);
+    }
+    // Notify initiator of final sign
+    const{data:docForNotif2}=await supabase.from("documents").select("owner_id").eq("id",activeDoc.id).single();
+    const{data:{user:u5}}=await supabase.auth.getUser();
+    if(docForNotif2?.owner_id&&u5&&docForNotif2.owner_id!==u5.id){
+      await supabase.from("activity_logs").insert({
+        user_id:docForNotif2.owner_id,action:"document_signed",document_id:activeDoc.id,
+        metadata:{document_title:docTitle,signed_by:u5.email,step:myRoute.route_order,total:myRoute.total_steps,status:"pending"},
+      });
+    }
     setMyRoute({...myRoute,status:"completed"});
     setRouteActioning(false);
-    alert("Document approved and saved.");
+    alert("Document approved and signed. Your Proof certificate has been issued to your inbox.");
   };
 
   /* ── Bake page canvases + overlays into JPEG data URLs ── */
   const bakePages=async():Promise<string[]>=>{
     if(!activeDoc)return[];
 
-   
+    if(activeDoc.format==="new"){
+      const pm=canvasAreaRef.current?.querySelector(".ProseMirror");
+      if(!pm)return["__new__:"+pm?.innerHTML];
+      return["__new__:"+pm.innerHTML];
+    }
 
     const isDocx = activeDoc.format==="docx";
     const refs   = isDocx ? docxPdfCanvasRefs : pdfCanvasRefs;
@@ -1018,37 +1538,42 @@ export default function DocumentsPage() {
       const base=refs.current[i];
       if(!base||base.width===0)continue;
 
+      // ── Key: canvas pixel size vs displayed CSS size ──
+      // Overlays are placed as % of the dp-pdf-stage div which matches
+      // the canvas CSS display size (style.width / style.height set by renderPdfPage).
+      // The canvas backing store (base.width/height) is at devicePixelRatio scale.
+      // So: overlay% → CSS pixels → scale up to canvas pixels for drawing.
+      const dispW = parseFloat(base.style.width)  || 816;
+      const dispH = parseFloat(base.style.height) || Math.round(base.height * (dispW / base.width));
+      const scaleX = base.width  / dispW;  // canvas pixels per CSS pixel (= devicePixelRatio ≈ 2)
+      const scaleY = base.height / dispH;
+
       const merged=document.createElement("canvas");
       merged.width =base.width;
       merged.height=base.height;
       const ctx=merged.getContext("2d")!;
       ctx.drawImage(base,0,0);
 
-      // Overlay positions are stored as % of the DISPLAYED size.
-      // canvas.width/height are at devicePixelRatio scale.
-      // So we must scale overlay coords by (canvas.width / display width).
-      // We get display width from the canvas style (set in renderPdfPage).
-      const dispW = parseFloat(base.style.width)  || base.offsetWidth  || 816;
-      const sX = base.width  / dispW;
-
       for(const ov of ovs.filter(o=>o.pageIdx===i)){
-        const x = (ov.x/100)*base.width;
-        const y = (ov.y/100)*base.height;
-        const fs = (ov.fontSize||16);
+        // Convert % of display size → CSS pixels → canvas pixels
+        const x  = (ov.x/100) * dispW  * scaleX;
+        const y  = (ov.y/100) * dispH  * scaleY;
+        const fs = (ov.fontSize||16) * scaleX; // font/image size scaled same as X axis
 
         if(ov.type==="text"||ov.type==="date"){
           ctx.save();
-          ctx.font=`bold ${fs*sX}px sans-serif`;
+          ctx.font=`bold ${fs}px sans-serif`;
           ctx.fillStyle="#1c1917";
-          // y offset: text baseline is at y+fontSize in screen coords
-          ctx.fillText(ov.content, x, y + fs*sX);
+          ctx.fillText(ov.content, x, y + fs); // baseline offset = font size
           ctx.restore();
         } else {
           await new Promise<void>(res=>{
             const img=new Image(); img.crossOrigin="anonymous";
             img.onload=()=>{
-              const w = ov.type==="image" ? fs*8*sX : fs*3*sX;
-              const h = w*(img.naturalHeight/(img.naturalWidth||1));
+              // image: fontSize*8 CSS px wide; signature: fontSize*3 CSS px wide
+              const wCSS = ov.type==="image" ? (ov.fontSize||16)*8 : (ov.fontSize||16)*3;
+              const w = wCSS * scaleX;
+              const h = w * (img.naturalHeight/(img.naturalWidth||1));
               ctx.drawImage(img,x,y,w,h); res();
             };
             img.onerror=()=>res();
@@ -1203,6 +1728,14 @@ export default function DocumentsPage() {
       }
     }
 
+    // Generate proof for decliner too
+    const{data:{user:ud}}=await supabase.auth.getUser();
+    if(ud){
+      const{data:profd}=await supabase.from("profiles").select("email,signature_url").eq("id",ud.id).single();
+      const sigUrld=profd?.signature_url?await resolveStorageUrl(profd.signature_url):"";
+      await generateProof(activeDoc.id,ud.id,profd?.email||ud.email||"","declined",
+        myRoute.route_order,myRoute.total_steps,sigUrld,docTitle);
+    }
     setMyRoute({...myRoute,status:"declined"});
     setRouteActioning(false);
     alert("Document declined. All involved parties have been notified.");
@@ -1269,7 +1802,7 @@ export default function DocumentsPage() {
     const imgUrl = supabase.storage.from("documents").getPublicUrl(path).data.publicUrl;
 
     const newId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const overlay: PdfOverlay = { id:newId, pageIdx:0, x:10, y:10, type:"image", content:imgUrl, fontSize:20 };
+    const overlay: PdfOverlay = { id:newId, pageIdx:0, x:10, y:10, type:"image", content:imgUrl, fontSize:20, step:myRoute?.route_order??0 };
 
     const target = imageInputTarget.current;
     if (target === "pdf") {
@@ -1340,6 +1873,7 @@ export default function DocumentsPage() {
               <span className={`dp-save-badge ${saveStatus}`}>{saveStatus==="saved"?"● Saved":saveStatus==="saving"?"⟳ Saving…":"● Unsaved"}</span>
               {activeDoc.format!=="new"&&<span style={{fontSize:10,fontFamily:"var(--mono)",background:"var(--accent-light)",color:"var(--accent)",padding:"2px 8px",borderRadius:20}}>{activeDoc.format.toUpperCase()}</span>}
               {/* Show route action buttons if user is a recipient, otherwise show Route button */}
+              {myRoute && <span style={{fontSize:9,fontFamily:"var(--mono)",background:"#fef9c3",color:"#b45309",padding:"2px 6px",borderRadius:4,flexShrink:0}}>route:{myRoute.status}</span>}
               {myRoute && myRoute.status === "pending" ? (
                 myRoute.is_final ? (
                   // Final recipient: Decline | Approve — then Print & Download unlock
@@ -1348,7 +1882,7 @@ export default function DocumentsPage() {
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       Decline
                     </button>
-                    <button className="dp-btn dp-btn-primary" style={{background:"#16a34a"}} onClick={handleSaveDoc} disabled={routeActioning}>
+                    <button className="dp-btn dp-btn-primary" style={{background:"#16a34a"}} onClick={()=>requestApprove("save")} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
                       {routeActioning?"Approving…":"Approve"}
                     </button>
@@ -1363,13 +1897,17 @@ export default function DocumentsPage() {
                     </button>
                   </div>
                 ) : (
-                  // Middle recipient: Decline | Approve
+                  // Middle recipient: Decline | Message | Approve
                   <div style={{display:"flex",gap:6,flexShrink:0}}>
                     <button className="dp-btn" style={{background:"transparent",color:"#dc2626",border:"1px solid #dc2626"}} onClick={handleDeclineRoute} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       Decline
                     </button>
-                    <button className="dp-btn dp-btn-primary" onClick={handleApprove} disabled={routeActioning}>
+                    <button className="dp-btn dp-btn-ghost" onClick={()=>{setShowComments(o=>!o);if(!showComments&&activeDoc)loadComments(activeDoc.id);}}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                      Message
+                    </button>
+                    <button className="dp-btn dp-btn-primary" onClick={()=>requestApprove("approve")} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
                       {routeActioning?"Approving…":"Approve"}
                     </button>
@@ -1459,7 +1997,7 @@ export default function DocumentsPage() {
                   </button>
                 ))}
                 {pdfTool!=="none"&&<span className="dp-pdf-tool-hint">Click anywhere on the page to place</span>}
-                {pdfOverlays.length>0&&<button className="dp-pdf-tool" style={{marginLeft:"auto",color:"#dc2626"}} onClick={()=>{setPdfOverlays([]);setSaveStatus("unsaved");}}>Clear All</button>}
+                {pdfOverlays.some(o=>!isLocked(o))&&<button className="dp-pdf-tool" style={{marginLeft:"auto",color:"#dc2626"}} onClick={()=>{setPdfOverlays(prev=>prev.filter(o=>isLocked(o)));setSaveStatus("unsaved");}}>Clear Mine</button>}
               </div>
               {Array.from({length:totalPages}).map((_,i)=>(
                 <div key={i}>
@@ -1490,7 +2028,7 @@ export default function DocumentsPage() {
                           content="Text here…";
                         }
                         const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                        setPdfOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:pdfTool,content,fontSize:16}]);
+                        setPdfOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:pdfTool,content,fontSize:16,step:myRoute?.route_order??0}]);
                         setSaveStatus("unsaved");
                         if(pdfTool==="text")setFocusId(newId);
                         setPdfTool("none");
@@ -1498,8 +2036,8 @@ export default function DocumentsPage() {
                     >
                       <canvas ref={el=>{pdfCanvasRefs.current[i]=el;}} className="dp-pdf-canvas"/>
                       {pdfOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                        <div key={ov.id} className="dp-pdf-overlay-item" style={{left:`${ov.x}%`,top:`${ov.y}%`}}
-                          onMouseDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}
+                        <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
+                          onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                           onWheel={e=>{
                             e.stopPropagation();
                             const delta=e.deltaY<0?2:-2;
@@ -1522,18 +2060,19 @@ export default function DocumentsPage() {
                           ):ov.type==="date"?(
                             <span className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16}}>{ov.content}</span>
                           ):(
-                            <div ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable suppressContentEditableWarning
+                            <div ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable={!isLocked(ov)} suppressContentEditableWarning
                               className="dp-pdf-overlay-text"
-                              style={{fontSize:ov.fontSize||16}}
+                              style={{fontSize:ov.fontSize||16,cursor:isLocked(ov)?"not-allowed":"move",opacity:isLocked(ov)?0.85:1,outline:isLocked(ov)?"none":undefined}}
+                              title={isLocked(ov)?"Placed by a previous recipient — cannot be edited":""}
                               onMouseDown={e=>{
                                 if(document.activeElement===e.currentTarget)e.stopPropagation();
                               }}
                               onClick={e=>e.stopPropagation()}
-                              onBlur={e=>{const txt=e.currentTarget.textContent||"";setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,content:txt}:o));setSaveStatus("unsaved");}}
+                              onBlur={e=>{if(!isLocked(ov)){const txt=e.currentTarget.textContent||"";setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,content:txt}:o));setSaveStatus("unsaved");}}}
                             >{ov.content}</div>
                           )}
-                          <button className="dp-pdf-overlay-del"
-                            onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>
+                          {!isLocked(ov)&&<button className="dp-pdf-overlay-del"
+                            onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>}
                         </div>
                       ))}
                     </div>
@@ -1573,7 +2112,7 @@ export default function DocumentsPage() {
                     </button>
                   ))}
                   {docxTool!=="none"&&<span className="dp-pdf-tool-hint">Click anywhere on the page to place</span>}
-                  {docxOverlays.length>0&&<button className="dp-pdf-tool" style={{marginLeft:"auto",color:"#dc2626"}} onClick={()=>{setDocxOverlays([]);setSaveStatus("unsaved");}}>Clear All</button>}
+                  {docxOverlays.some(o=>!isLocked(o))&&<button className="dp-pdf-tool" style={{marginLeft:"auto",color:"#dc2626"}} onClick={()=>{setDocxOverlays(prev=>prev.filter(o=>isLocked(o)));setSaveStatus("unsaved");}}>Clear Mine</button>}
                 </div>
                 {Array.from({length:docxPdfDoc.numPages}).map((_,i)=>(
                   <div key={`${activeDoc.id}-docxpdf-${i}`}>
@@ -1599,7 +2138,7 @@ export default function DocumentsPage() {
                             if(!content){alert("Could not load signature.");return;}
                           }else{content="Text here…";}
                           const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                          setDocxOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:docxTool,content,fontSize:16}]);
+                          setDocxOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:docxTool,content,fontSize:16,step:myRoute?.route_order??0}]);
                           setSaveStatus("unsaved");
                           if(docxTool==="text")setFocusId(newId);
                           setDocxTool("none");
@@ -1607,18 +2146,19 @@ export default function DocumentsPage() {
                       >
                         <canvas ref={el=>{docxPdfCanvasRefs.current[i]=el;}} style={{display:"block",maxWidth:"100%"}}/>
                         {docxOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                          <div key={ov.id} className="dp-pdf-overlay-item" style={{left:`${ov.x}%`,top:`${ov.y}%`}}
-                            onMouseDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}
+                          <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
+                            onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                             onWheel={e=>{
                               e.stopPropagation();
+                              if(isLocked(ov))return;
                               const delta=e.deltaY<0?2:-2;
                               setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,Math.min(120,(o.fontSize||16)+delta))}:o));
                               setSaveStatus("unsaved");
                             }}>
                             <div className="dp-overlay-resize">
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}>+</button>
+                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}}>+</button>
                               <span>{ov.fontSize||16}px</span>
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}>−</button>
+                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}}>−</button>
                             </div>
                             {ov.type==="image"?(
                               <img src={ov.content} alt="attachment" crossOrigin="anonymous"
@@ -1639,8 +2179,8 @@ export default function DocumentsPage() {
                                 onBlur={e=>{const txt=e.currentTarget.textContent||"";setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,content:txt}:o));setSaveStatus("unsaved");}}
                               >{ov.content}</div>
                             )}
-                            <button className="dp-pdf-overlay-del"
-                              onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>
+                            {!isLocked(ov)&&<button className="dp-pdf-overlay-del"
+                              onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>}
                           </div>
                         ))}
                       </div>
@@ -1839,6 +2379,91 @@ export default function DocumentsPage() {
                 Send to {selectedRoute.length} Recipient{selectedRoute.length!==1?"s":""}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Authentication confirmation modal ── */}
+      {showAuthModal&&(
+        <div className="dp-auth-backdrop" onClick={()=>{if(!authLoading){setShowAuthModal(false);setAuthPassword("");setAuthError("");}}}>
+          <div className="dp-auth-modal" onClick={e=>e.stopPropagation()}>
+            <div className="dp-auth-icon">🔐</div>
+            <div className="dp-auth-title">Confirm Your Identity</div>
+            <div className="dp-auth-sub">
+              Enter the 6-digit code from your authenticator app to {authAction==="save"?"approve and sign":"approve and forward"} this document.<br/>
+              This ensures only you can authorise this action.
+            </div>
+            <input
+              className="dp-auth-input"
+              type="text"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="123456"
+              autoFocus
+              value={authPassword}
+              onChange={e=>{setAuthPassword(e.target.value.replace(/\D/g,""));setAuthError("");}}
+              onKeyDown={e=>e.key==="Enter"&&verifyAndApprove()}
+              style={{letterSpacing:"0.3em",fontSize:22,textAlign:"center",fontFamily:"var(--mono)"}}
+            />
+            {authError&&<div className="dp-auth-error">{authError}</div>}
+            <div className="dp-auth-btns">
+              <button className="dp-auth-btn ghost" onClick={()=>{setShowAuthModal(false);setAuthPassword("");setAuthError("");}} disabled={authLoading}>
+                Cancel
+              </button>
+              <button className="dp-auth-btn primary" onClick={verifyAndApprove} disabled={authLoading||authPassword.length!==6}>
+                {authLoading?"Verifying…":authAction==="save"?"Approve & Sign":"Approve"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Comments FAB (only visible when a doc is open and user is involved) ── */}
+      {activeDoc&&(myRoute||isInitiator)&&(
+        <button className="dp-comments-fab" onClick={()=>{setShowComments(o=>!o);if(!showComments&&activeDoc)loadComments(activeDoc.id);}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          {comments.length>0&&<span className="dp-comments-badge">{comments.length>9?"9+":comments.length}</span>}
+        </button>
+      )}
+
+      {/* ── Comments dialog ── */}
+      {showComments&&activeDoc&&(
+        <div className="dp-comments-dialog">
+          <div className="dp-comments-header">
+            <span className="dp-comments-title">💬 Document Comments</span>
+            <button className="dp-comments-close" onClick={()=>setShowComments(false)}>×</button>
+          </div>
+          <div className="dp-comments-body">
+            {comments.length===0&&(
+              <div style={{textAlign:"center",color:"var(--muted)",fontSize:12,padding:"20px 0"}}>
+                No messages yet.<br/>Start a conversation about this document.
+              </div>
+            )}
+            {comments.map((c:any)=>{
+              const mine=c.sender_id===currentUserId;
+              return(
+                <div key={c.id} style={{display:"flex",flexDirection:"column",alignItems:mine?"flex-end":"flex-start"}}>
+                  <div className={`dp-comment ${mine?"mine":"theirs"}`}>
+                    {c.message}
+                    <div className="dp-comment-meta">
+                      {c.sender_email?.split("@")[0]} · {new Date(c.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                      {c.is_initiator&&<span style={{marginLeft:4,fontSize:9,background:"rgba(255,255,255,.25)",padding:"1px 4px",borderRadius:3}}>Owner</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="dp-comments-input">
+            <textarea className="dp-comments-textarea" rows={2}
+              placeholder="Type a message…"
+              value={commentText}
+              onChange={e=>setCommentText(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendComment();}}}
+            />
+            <button className="dp-comments-send" onClick={sendComment} disabled={commentSending||!commentText.trim()}>
+              {commentSending?"…":"Send"}
+            </button>
           </div>
         </div>
       )}

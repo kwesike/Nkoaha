@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase } from ".././lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 const STYLES = `
@@ -39,6 +39,68 @@ const STYLES = `
   .st-toggle-thumb{width:16px;height:16px;border-radius:50%;background:#fff;position:absolute;top:3px;left:3px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
   .st-toggle-track.on .st-toggle-thumb{left:21px}
 `;
+
+function MFAStatus() {
+  const [hasMFA, setHasMFA] = useState<boolean|null>(null);
+  const [removing, setRemoving] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.mfa.listFactors().then(({ data }) => {
+      setHasMFA(data?.totp?.some((f:any) => f.status === "verified") ?? false);
+    });
+  }, []);
+
+  async function removeMFA() {
+    if (!confirm("Remove 2FA from your account? You will no longer need a code to approve documents — but this is less secure.")) return;
+    setRemoving(true);
+    const { data } = await supabase.auth.mfa.listFactors();
+    for (const factor of (data?.totp || [])) {
+      await supabase.auth.mfa.unenroll({ factorId: factor.id });
+    }
+    setHasMFA(false);
+    setRemoving(false);
+  }
+
+  if (hasMFA === null) return (
+    <div style={{padding:"14px 20px",fontSize:13,color:"var(--muted)"}}>Checking 2FA status…</div>
+  );
+
+  if (hasMFA) return (
+    <div className="st-row">
+      <div className="st-row-value">
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+          <span style={{fontSize:18}}>🔐</span>
+          <div>
+            <div style={{fontSize:13,fontWeight:600,color:"var(--green)"}}>✓ Authenticator app connected</div>
+            <div style={{fontSize:11.5,color:"var(--muted)",marginTop:1}}>Your account is protected with 2FA</div>
+          </div>
+        </div>
+        <button className="st-btn st-btn-danger" onClick={removeMFA} disabled={removing}>
+          {removing ? "Removing…" : "Remove 2FA"}
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="st-row">
+      <div className="st-row-value">
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <span style={{fontSize:18}}>⚠️</span>
+          <div>
+            <div style={{fontSize:13,fontWeight:600,color:"var(--amber)"}}>2FA not set up</div>
+            <div style={{fontSize:11.5,color:"var(--muted)",marginTop:1}}>
+              You need an authenticator app to approve documents
+            </div>
+          </div>
+        </div>
+        <a href="/mfa-setup" style={{display:"inline-flex",alignItems:"center",gap:6,padding:"8px 16px",background:"var(--purple)",color:"#fff",borderRadius:8,fontSize:12.5,fontWeight:600,textDecoration:"none",transition:"background .15s"}}>
+          🔐 Set Up Authenticator App
+        </a>
+      </div>
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const [org, setOrg]         = useState<any>(null);
@@ -248,7 +310,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <div className="st-section-title">Password</div>
-              <div className="st-section-desc">Change your account password</div>
+              <div className="st-section-desc">Change your password or set one if you joined via invite link</div>
             </div>
           </div>
           <div className="st-row">
@@ -263,6 +325,20 @@ export default function SettingsPage() {
             <button className="st-btn st-btn-primary" onClick={changePassword} disabled={pwSaving||!pwNew||!pwNew2}>{pwSaving?"Updating…":"Update Password"}</button>
             {msg?.field==="pw"&&<span className={`st-msg ${msg.type}`} style={{margin:0}}>{msg.text}</span>}
           </div>
+        </div>
+
+        {/* Two-Factor Authentication */}
+        <div className="st-section">
+          <div className="st-section-head">
+            <div className="st-section-icon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            </div>
+            <div>
+              <div className="st-section-title">Two-Factor Authentication</div>
+              <div className="st-section-desc">Required for document approvals</div>
+            </div>
+          </div>
+          <MFAStatus />
         </div>
 
         {/* Notifications */}

@@ -3,7 +3,6 @@ import { supabase } from "../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 import "../components/organization/dash.css";
 
-/* ─── STYLES ─── */
 const STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=DM+Mono:wght@400;500&display=swap');
   :root {
@@ -53,8 +52,6 @@ const STYLES = `
   .og-members-empty{padding:24px 18px;text-align:center;color:var(--muted);font-size:13px}
   @keyframes shimmer{0%{background-position:-600px 0}100%{background-position:600px 0}}
   .og-skel{background:linear-gradient(90deg,#e9e7e4 25%,#f0ede8 50%,#e9e7e4 75%);background-size:600px 100%;animation:shimmer 1.5s infinite;border-radius:6px}
-
-  /* ── ADD MEMBER MODAL (inlined) ── */
   .ams-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:200;backdrop-filter:blur(4px)}
   .ams-modal{background:#fff;border-radius:16px;padding:28px;width:440px;max-width:96vw;box-shadow:0 24px 64px rgba(0,0,0,.18);animation:ams-in .16s ease}
   @keyframes ams-in{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
@@ -70,7 +67,7 @@ const STYLES = `
   .ams-result-avatar{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
   .ams-result-info{flex:1;min-width:0}
   .ams-result-email{font-size:13px;font-weight:500;color:#1c1917;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'DM Sans',sans-serif}
-  .ams-result-label{font-size:11px;color:#78716c;font-family:'DM Mono',monospace}
+  .ams-result-label{font-size:11px;font-family:'DM Mono',monospace}
   .ams-status{font-size:13px;padding:10px 12px;border-radius:8px;font-family:'DM Sans',sans-serif;text-align:center}
   .ams-status.success{background:#dcfce7;color:#15803d}.ams-status.error{background:#fee2e2;color:#dc2626}.ams-status.info{background:#ede9fe;color:#7c3aed}
   .ams-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
@@ -82,7 +79,6 @@ function initials(name: string) {
   return name ? name.split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase() : "?";
 }
 
-/* ─── INLINED ADD MEMBER MODAL ─── */
 interface AddMemberProps {
   organizationId: string;
   organizationName: string;
@@ -102,10 +98,20 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
       .from("profiles").select("id,email,role")
       .eq("email", email.trim().toLowerCase()).single();
     setLoading(false);
-    if (error || !data) { setStatus({ type:"error", msg:"No user found with that email address." }); return; }
-    if (data.role === "organization") { setStatus({ type:"error", msg:"This user is an organization owner and cannot be added as a member." }); return; }
+
+    if (error || !data) {
+      // ── Not on NkoAha — offer email invite ──
+      setFound({ id: "", email: email.trim().toLowerCase() });
+      setStatus({ type:"info", msg:`No NkoAha account found. Click "Send Email Invite" to invite them to sign up and join ${organizationName}.` });
+      return;
+    }
+    if (data.role === "organization") {
+      setStatus({ type:"error", msg:"This user is an organization owner and cannot be added as a member." });
+      return;
+    }
+    // ── Registered user ──
     setFound({ id: data.id, email: data.email });
-    setStatus({ type:"info", msg:"User found — click Add to invite them." });
+    setStatus({ type:"info", msg:`Found ${data.email} on NkoAha — click Send to Inbox to invite them.` });
   };
 
   const addMember = async () => {
@@ -113,14 +119,42 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
     setLoading(true); setStatus(null);
     const { data:{ user } } = await supabase.auth.getUser(); if (!user) return;
 
-    // Check already a member of this org
+    // ── PATH A: Not registered — send email invite via magic link ──
+    if (found.id === "") {
+      const token    = `${organizationId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+      const joinLink = `${window.location.origin}/join-org?invite=${token}&org=${organizationId}&name=${encodeURIComponent(organizationName)}&email=${encodeURIComponent(found.email)}`;
+
+      const { error: invErr } = await supabase.from("organization_invites").insert({
+        organization_id: organizationId,
+        email:           found.email,
+        invited_by:      user.id,
+        status:          "pending",
+        invite_token:    token,
+      } as any);
+      if (invErr) { setStatus({ type:"error", msg:"Failed to create invite: " + invErr.message }); setLoading(false); return; }
+
+      const { error: emailErr } = await supabase.auth.signInWithOtp({
+        email: found.email,
+        options: {
+          emailRedirectTo: joinLink,
+          shouldCreateUser: true,
+          data: { org_name: organizationName, invite_token: token },
+        },
+      });
+      if (emailErr) { setStatus({ type:"error", msg:"Failed to send email: " + emailErr.message }); setLoading(false); return; }
+
+      setStatus({ type:"success", msg:`📧 Email invite sent to ${found.email}. They will receive a signup link.` });
+      setFound(null); setEmail("");
+      setLoading(false); return;
+    }
+
+    // ── PATH B: Registered user — inbox only, no email ──
     const { data: existing } = await supabase.from("profiles").select("organization_id").eq("id", found.id).single();
     if (existing?.organization_id === organizationId) {
       setStatus({ type:"error", msg:"This user is already in your organization." });
       setLoading(false); return;
     }
 
-    // Check for existing pending invite — table is organization_invites
     const { data: existingInvite } = await supabase
       .from("organization_invites").select("id,status")
       .eq("organization_id", organizationId).eq("email", found.email).single();
@@ -129,7 +163,6 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
       setLoading(false); return;
     }
 
-    // Insert invite
     const { error: inviteErr } = await supabase.from("organization_invites").insert({
       organization_id: organizationId,
       email:           found.email,
@@ -138,7 +171,6 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
     });
     if (inviteErr) { setStatus({ type:"error", msg:"Failed to invite: " + inviteErr.message }); setLoading(false); return; }
 
-    // Notify user via activity_logs — they accept in their inbox
     await supabase.from("activity_logs").insert({
       user_id:  found.id,
       action:   "org_invite_received",
@@ -150,10 +182,9 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
       },
     });
 
-    setStatus({ type:"success", msg:`Invitation sent to ${found.email}. They will see it in their inbox.` });
+    setStatus({ type:"success", msg:`📬 Invite sent to ${found.email}'s inbox. They will see it when they log in.` });
     setFound(null); setEmail("");
     setLoading(false);
-    // Don't call onMemberAdded yet — member list updates when they accept
   };
 
   return (
@@ -174,10 +205,14 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
             <div className="ams-result-avatar">{found.email[0].toUpperCase()}</div>
             <div className="ams-result-info">
               <div className="ams-result-email">{found.email}</div>
-              <div className="ams-result-label">Ready to add</div>
+              <div className="ams-result-label" style={{color: found.id ? "#16a34a" : "#b45309"}}>
+                {found.id
+                  ? "✓ NkoAha account found — invite goes to their inbox"
+                  : "⚠ Not on NkoAha yet — invite goes to their email"}
+              </div>
             </div>
             <button className="ams-btn primary" onClick={addMember} disabled={loading}>
-              {loading ? "Adding…" : "Add"}
+              {loading ? "Sending…" : found.id ? "📬 Send to Inbox" : "📧 Send Email Invite"}
             </button>
           </div>
         )}
@@ -190,7 +225,6 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
   );
 }
 
-/* ─── MAIN COMPONENT ─── */
 export default function OrganizationDashboard() {
   const [showAddMember, setShowAddMember] = useState(false);
   const [organization, setOrganization]   = useState<Organization|null>(null);
@@ -220,7 +254,6 @@ export default function OrganizationDashboard() {
     const docs    = docsRes.data    || [];
     const mems    = membersRes.data || [];
     const invites = invitesRes.data || [];
-    // Show accepted members + pending invites (pending badge until they accept)
     const pendingRows = invites
       .filter((inv:any) => !mems.find((m:any) => m.email === inv.email))
       .map((inv:any) => ({ id: inv.id, email: inv.email, status: "pending" }));
@@ -265,8 +298,6 @@ export default function OrganizationDashboard() {
   return (
     <DashboardLayout>
       <div className="dashboard-page">
-
-        {/* HEADER */}
         <div className="og-page-header">
           <div className="og-org-info">
             {organization.logo
@@ -287,7 +318,6 @@ export default function OrganizationDashboard() {
           </div>
         </div>
 
-        {/* STAT CARDS */}
         <div className="og-stats">
           {statsLoading
             ? Array.from({length:5}).map((_,i) => (
@@ -307,7 +337,6 @@ export default function OrganizationDashboard() {
           }
         </div>
 
-        {/* MEMBERS STRIP */}
         <div className="og-members-strip">
           <div className="og-members-head">
             <div className="og-members-title"><div className="og-members-dot"/>Team Members</div>
@@ -345,9 +374,6 @@ export default function OrganizationDashboard() {
           )}
         </div>
 
-        
-
-        {/* ADD MEMBER MODAL */}
         {showAddMember && organization && (
           <AddMemberModal
             organizationId={organization.id}
@@ -355,7 +381,6 @@ export default function OrganizationDashboard() {
             onClose={() => setShowAddMember(false)}
           />
         )}
-
       </div>
     </DashboardLayout>
   );

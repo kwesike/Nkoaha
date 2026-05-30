@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import Topbar from "./Topbar";
 import Sidebar from "./Sidebar";
 import "../dashboard.css";
+import SupportChat from "../SupportChat";
 
 type Role = "individual" | "organization" | "organization_member";
 
@@ -16,15 +17,13 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [role, setRole]               = useState<Role | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [ready, setReady]             = useState(false);
+  const [hasPremium, setHasPremium]   = useState(false);
 
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { navigate("/"); return; }
 
-      // ── Always fetch fresh from DB first ──
-      // localStorage is only used as an instant pre-render hint,
-      // but DB is always the source of truth.
       const { data: profile, error } = await supabase
         .from("profiles")
         .select("role, email")
@@ -32,7 +31,6 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         .single();
 
       if (!error && profile?.role) {
-        // DB succeeded — use real role
         const dbRole = profile.role as Role;
         let dbName   = profile.email?.split("@")[0] || "";
 
@@ -42,17 +40,22 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           if (org?.name) dbName = org.name;
         }
 
-        // Update cache with correct values
         localStorage.setItem("nkoaha_role", dbRole);
         localStorage.setItem("nkoaha_name", dbName || user.email?.split("@")[0] || "");
 
         setRole(dbRole);
         setDisplayName(dbName || user.email?.split("@")[0] || "User");
         setReady(true);
+
+        // Check premium plan
+        const { data: sub } = await supabase.from("subscriptions")
+          .select("plan_id").eq("user_id", user.id).eq("status", "active")
+          .order("created_at", { ascending: false }).limit(1).maybeSingle();
+        const premiumPlans = ["org_growth", "org_enterprise", "ind_monthly", "ind_yearly"];
+        setHasPremium(sub ? premiumPlans.includes(sub.plan_id) : false);
         return;
       }
 
-      // ── DB blocked (RLS) — fall back to localStorage then org table ──
       console.warn("DashboardLayout: profile blocked —", error?.message);
 
       const cachedRole = localStorage.getItem("nkoaha_role") as Role | null;
@@ -65,7 +68,6 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         return;
       }
 
-      // No cache — try organizations table to distinguish org from individual
       const { data: org } = await supabase
         .from("organizations").select("name").eq("owner_id", user.id).single();
 
@@ -108,6 +110,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         <Sidebar role={role} />
         <main className="dashboard-content">{children}</main>
       </div>
+      <SupportChat hasPremium={hasPremium} />
     </div>
   );
 }

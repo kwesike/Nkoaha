@@ -43,8 +43,6 @@ const STYLES = `
   .mp-empty-icon{font-size:40px;opacity:.35;margin-bottom:12px}
   @keyframes shimmer{0%{background-position:-600px 0}100%{background-position:600px 0}}
   .mp-skel{background:linear-gradient(90deg,#e9e7e4 25%,#f0ede8 50%,#e9e7e4 75%);background-size:600px 100%;animation:shimmer 1.5s infinite;border-radius:6px}
-
-  /* Invite modal */
   .mp-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(3px)}
   .mp-modal{background:#fff;border-radius:14px;padding:26px;width:420px;max-width:96vw;box-shadow:0 20px 60px rgba(0,0,0,.16);animation:mp-in .15s ease}
   @keyframes mp-in{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}
@@ -64,23 +62,23 @@ const STYLES = `
 `;
 
 export default function OrgMembersPage() {
-  const [members, setMembers]   = useState<Member[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [orgId, setOrgId]       = useState("");
-  const [orgName, setOrgName]   = useState("");
-  const [tab, setTab]           = useState<"all"|"active"|"pending">("all");
-  const [search, setSearch]     = useState("");
-  const [showModal, setShowModal] = useState(false);
-  const [inviteEmail, setInviteEmail]   = useState("");
+  const [members, setMembers]         = useState<Member[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [orgId, setOrgId]             = useState("");
+  const [orgName, setOrgName]         = useState("");
+  const [tab, setTab]                 = useState<"all"|"active"|"pending">("all");
+  const [search, setSearch]           = useState("");
+  const [showModal, setShowModal]     = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
   const [inviteLoading, setInviteLoading] = useState(false);
-  const [inviteMsg, setInviteMsg]       = useState<{type:"success"|"error"|"info";msg:string}|null>(null);
-  const [foundUser, setFoundUser]       = useState<{id:string;email:string}|null>(null);
-  const [planLimit, setPlanLimit]       = useState<number>(20); // default starter
+  const [inviteMsg, setInviteMsg]     = useState<{type:"success"|"error"|"info";msg:string}|null>(null);
+  const [foundUser, setFoundUser]     = useState<{id:string;email:string}|null>(null);
+  const [planLimit, setPlanLimit]     = useState<number>(10);
 
   useEffect(() => {
     const id = "mp-styles";
     if (!document.getElementById(id)) {
-      const el = document.createElement("style"); el.id = id; el.textContent = STYLES;
+      const el = document.createElement("style"); el.id=id; el.textContent=STYLES;
       document.head.appendChild(el);
     }
     load();
@@ -97,54 +95,57 @@ export default function OrgMembersPage() {
     setOrgId(org.id); setOrgName(org.name);
 
     const [profRes, invRes] = await Promise.all([
-      supabase.from("profiles")
-        .select("id,email,status")
-        .eq("organization_id", org.id),
-      supabase.from("organization_invites")
-        .select("id,email,status")
-        .eq("organization_id", org.id)
-        .eq("status", "pending"),
+      supabase.from("profiles").select("id,email,status").eq("organization_id", org.id),
+      supabase.from("organization_invites").select("id,email,status")
+        .eq("organization_id", org.id).eq("status", "pending"),
     ]);
 
     const accepted: Member[] = (profRes.data || []).map((m: any) => ({
       id: m.id, email: m.email, status: m.status || "active",
     }));
-
     const pending: Member[] = (invRes.data || [])
       .filter((inv: any) => !accepted.find(a => a.email === inv.email))
-      .map((inv: any) => ({
-        id: inv.id, email: inv.email, status: "pending", isPending: true,
-      }));
+      .map((inv: any) => ({ id: inv.id, email: inv.email, status: "pending", isPending: true }));
 
     setMembers([...accepted, ...pending]);
 
-    // Fetch real plan member limit from subscriptions
+    // Fetch real plan limit from subscriptions
     const { data: sub } = await supabase.from("subscriptions")
-      .select("plan_id,member_limit,status,expires_at")
-      .eq("user_id", user.id)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .select("plan_id,member_limit").eq("user_id", user.id).eq("status","active")
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
 
-    if (sub?.member_limit !== undefined && sub.member_limit !== null) {
-      setPlanLimit(sub.member_limit);
-    } else if (sub?.plan_id === "org_enterprise") {
+    if (sub?.plan_id === "org_enterprise") {
       setPlanLimit(Infinity);
+    } else if (sub?.member_limit !== undefined && sub.member_limit !== null) {
+      setPlanLimit(sub.member_limit);
     } else {
-      setPlanLimit(20); // no active sub = free trial, 20 default
+      setPlanLimit(10);
     }
 
     setLoading(false);
   }
 
   async function removeMember(m: Member) {
-    if (!confirm(`Remove ${m.email}?`)) return;
+    if (!confirm(`Remove ${m.email} from ${orgName}?`)) return;
     if (m.isPending) {
-      await supabase.from("organization_invites").delete().eq("id", m.id);
+      const { error } = await supabase.from("organization_invites").delete().eq("id", m.id);
+      if (error) { alert("Failed to cancel invite: " + error.message); return; }
     } else {
-      await supabase.from("profiles")
-        .update({ organization_id: null, role: "individual" }).eq("id", m.id);
+      // Step 1: clear profile
+      const { error } = await supabase.from("profiles")
+        .update({ organization_id: null, role: "individual" })
+        .eq("id", m.id)
+        .eq("organization_id", orgId);
+      if (error) {
+        console.error("Remove member error:", error);
+        alert("Could not remove member: " + error.message);
+        return;
+      }
+      // Step 2: delete any invite row so they don't reappear as "pending"
+      await supabase.from("organization_invites")
+        .delete()
+        .eq("organization_id", orgId)
+        .eq("email", m.email);
     }
     load();
   }
@@ -152,47 +153,114 @@ export default function OrgMembersPage() {
   async function searchUser() {
     if (!inviteEmail.trim()) return;
     setInviteLoading(true); setInviteMsg(null); setFoundUser(null);
+
     const { data, error } = await supabase.from("profiles")
       .select("id,email,role").eq("email", inviteEmail.trim().toLowerCase()).single();
     setInviteLoading(false);
-    if (error || !data) { setInviteMsg({ type:"error", msg:"No user found with that email." }); return; }
-    if (data.role === "organization") { setInviteMsg({ type:"error", msg:"This user is an org owner." }); return; }
-    if (members.find(m => m.email === data.email)) { setInviteMsg({ type:"error", msg:"Already a member or invited." }); return; }
+
+    if (error || !data) {
+      // ── Not on NkoAha — offer email invite ──
+      setInviteMsg({
+        type: "info",
+        msg: `No NkoAha account found for "${inviteEmail.trim()}". Click Send Email Invite to send them a signup link.`,
+      });
+      setFoundUser({ id: "", email: inviteEmail.trim().toLowerCase() });
+      return;
+    }
+
+    if (data.role === "organization") {
+      setInviteMsg({ type:"error", msg:"This user is an organisation owner and cannot be added as a member." });
+      return;
+    }
+    if (members.find(m => m.email === data.email)) {
+      setInviteMsg({ type:"error", msg:"This person is already a member or has a pending invite." });
+      return;
+    }
+
+    // ── Registered user found ──
     setFoundUser({ id: data.id, email: data.email });
-    setInviteMsg({ type:"info", msg:"User found — click Send Invite." });
+    setInviteMsg({ type:"info", msg:`Found ${data.email} on NkoAha — click Send to Inbox to invite them.` });
   }
 
   async function sendInvite() {
     if (!foundUser || !orgId) return;
     setInviteLoading(true); setInviteMsg(null);
-    const { data: { user } } = await supabase.auth.getUser(); if (!user) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
 
-    // ── Enforce plan limits ──
-    // Free: 0 paid members (trial only), Starter: 20, Growth: 100, Enterprise: unlimited
-    // For now we enforce Starter limit (20) as default paid tier
-    // In production this would check the subscriptions table
-    const currentCount = members.filter(m => !m.isPending && m.status === "active").length;
-    const PLAN_LIMIT = 20; // Starter plan default — update when billing is live
-    if (currentCount >= PLAN_LIMIT) {
+    // ── PATH A: Not registered — send email invite via magic link ──
+    if (foundUser.id === "") {
+      const token    = `${orgId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+      const joinLink = `${window.location.origin}/join-org?invite=${token}&org=${orgId}&name=${encodeURIComponent(orgName)}&email=${encodeURIComponent(foundUser.email)}`;
+
+      const { error: invErr } = await supabase.from("organization_invites").insert({
+        organization_id: orgId,
+        email:           foundUser.email,
+        invited_by:      user.id,
+        status:          "pending",
+        invite_token:    token,
+      } as any);
+      if (invErr) {
+        setInviteMsg({ type:"error", msg:"Failed to create invite: " + invErr.message });
+        setInviteLoading(false); return;
+      }
+
+      const { error: emailErr } = await supabase.auth.signInWithOtp({
+        email: foundUser.email,
+        options: {
+          emailRedirectTo: joinLink,
+          shouldCreateUser: true,
+          data: { org_name: orgName, invite_token: token },
+        },
+      });
+      if (emailErr) {
+        setInviteMsg({ type:"error", msg:"Failed to send email: " + emailErr.message });
+        setInviteLoading(false); return;
+      }
+
+      setInviteMsg({ type:"success", msg:`📧 Email invite sent to ${foundUser.email}. They will receive a signup link.` });
+      setFoundUser(null); setInviteEmail("");
+      setInviteLoading(false);
+      load(); return;
+    }
+
+    // ── PATH B: Registered user — inbox only, no email ──
+
+    // Enforce plan member limits
+    const activeCount = members.filter(m => !m.isPending && m.status === "active").length;
+    if (planLimit !== Infinity && activeCount >= planLimit) {
       setInviteMsg({
         type: "error",
-        msg: `Your current plan allows up to ${PLAN_LIMIT} members. You have ${currentCount}. Please upgrade your plan in Billing to add more members.`
+        msg: `Your plan allows up to ${planLimit} members (you have ${activeCount}). Upgrade in Billing to add more.`,
       });
       setInviteLoading(false); return;
     }
 
-    const { error } = await supabase.from("organization_invites").insert({
-      organization_id: orgId, email: foundUser.email,
-      invited_by: user.id, status: "pending",
+    // Record invite
+    const { error: invErr } = await supabase.from("organization_invites").insert({
+      organization_id: orgId,
+      email:           foundUser.email,
+      invited_by:      user.id,
+      status:          "pending",
     });
-    if (error) { setInviteMsg({ type:"error", msg:"Failed: " + error.message }); setInviteLoading(false); return; }
+    if (invErr) {
+      setInviteMsg({ type:"error", msg:"Failed: " + invErr.message });
+      setInviteLoading(false); return;
+    }
 
+    // Notify their inbox — they accept from within the app, no email needed
     await supabase.from("activity_logs").insert({
-      user_id: foundUser.id, action: "org_invite_received",
-      metadata: { organization_id: orgId, organization_name: orgName, invited_by: user.id, status: "pending" },
+      user_id:     foundUser.id,
+      action:      "org_invite_received",
+      metadata: {
+        organization_id:   orgId,
+        organization_name: orgName,
+        invited_by:        user.id,
+        status:            "pending",
+      },
     });
 
-    setInviteMsg({ type:"success", msg:`Invite sent to ${foundUser.email}!` });
+    setInviteMsg({ type:"success", msg:`📬 Invite sent to ${foundUser.email}'s inbox. They will see it when they next log in.` });
     setFoundUser(null); setInviteEmail("");
     setInviteLoading(false);
     load();
@@ -210,7 +278,6 @@ export default function OrgMembersPage() {
     <DashboardLayout>
       <div className="mp-root">
 
-        {/* Header */}
         <div className="mp-header">
           <div className="mp-heading">
             Team Members
@@ -222,7 +289,7 @@ export default function OrgMembersPage() {
               </span>
             )}
           </div>
-          <button className="mp-btn-primary" onClick={() => { setShowModal(true); setInviteMsg(null); setFoundUser(null); setInviteEmail(""); }}>
+          <button className="mp-btn-primary" onClick={()=>{setShowModal(true);setInviteMsg(null);setFoundUser(null);setInviteEmail("");}}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
               <line x1="19" y1="8" x2="19" y2="14"/><line x1="16" y1="11" x2="22" y2="11"/>
@@ -231,30 +298,22 @@ export default function OrgMembersPage() {
           </button>
         </div>
 
-        {/* Tabs */}
         <div className="mp-tabs">
-          {(["all","active","pending"] as const).map(t => (
+          {(["all","active","pending"] as const).map(t=>(
             <button key={t} className={`mp-tab${tab===t?" active":""}`} onClick={()=>setTab(t)}>
-              {t==="all" ? `All (${members.length})` : t==="active" ? `Active (${members.filter(m=>m.status==="active").length})` : `Pending (${pendingCount})`}
+              {t==="all"?`All (${members.length})`:t==="active"?`Active (${members.filter(m=>m.status==="active").length})`:`Pending (${pendingCount})`}
             </button>
           ))}
         </div>
 
-        {/* Search */}
-        <input className="mp-search" placeholder="Search by email…"
-          value={search} onChange={e => setSearch(e.target.value)} />
+        <input className="mp-search" placeholder="Search by email…" value={search} onChange={e=>setSearch(e.target.value)}/>
 
-        {/* Table */}
         <div className="mp-table">
           <div className="mp-thead">
-            <span></span>
-            <span>Name</span>
-            <span>Email</span>
-            <span>Status</span>
-            <span>Action</span>
+            <span></span><span>Name</span><span>Email</span><span>Status</span><span>Action</span>
           </div>
 
-          {loading && Array.from({length:4}).map((_,i) => (
+          {loading && Array.from({length:4}).map((_,i)=>(
             <div key={i} className="mp-row">
               <div className="mp-skel" style={{width:34,height:34,borderRadius:9}}/>
               <div><div className="mp-skel" style={{width:90,height:11,marginBottom:5}}/><div className="mp-skel" style={{width:130,height:9}}/></div>
@@ -268,13 +327,13 @@ export default function OrgMembersPage() {
             <div className="mp-empty">
               <div className="mp-empty-icon">👥</div>
               <p style={{fontWeight:500,color:"#44403c",marginBottom:4,fontSize:14}}>
-                {search ? "No members match your search" : "No members yet"}
+                {search?"No members match your search":"No members yet"}
               </p>
               <span style={{fontSize:12}}>Click Add Member to invite your team</span>
             </div>
           )}
 
-          {!loading && filtered.map(m => (
+          {!loading && filtered.map(m=>(
             <div key={m.id} className="mp-row">
               <div className="mp-avatar">{m.email[0]?.toUpperCase()}</div>
               <div>
@@ -286,18 +345,19 @@ export default function OrgMembersPage() {
                 {m.status==="active"?"Active":m.status==="pending"?"Pending":"Inactive"}
               </span>
               <button className="mp-remove" onClick={()=>removeMember(m)}>
-                {m.isPending ? "Cancel" : "Remove"}
+                {m.isPending?"Cancel":"Remove"}
               </button>
             </div>
           ))}
         </div>
 
-        {/* Invite Modal */}
         {showModal && (
           <div className="mp-backdrop" onClick={()=>setShowModal(false)}>
             <div className="mp-modal" onClick={e=>e.stopPropagation()}>
               <div className="mp-modal-title">Add Team Member</div>
-              <div className="mp-modal-sub">Search by email to invite someone to <strong>{orgName}</strong></div>
+              <div className="mp-modal-sub">
+                Search by email to invite someone to <strong>{orgName}</strong>
+              </div>
               <div className="mp-input-row">
                 <input className="mp-input" type="email" placeholder="Email address…" autoFocus
                   value={inviteEmail}
@@ -307,19 +367,28 @@ export default function OrgMembersPage() {
                   {inviteLoading?"…":"Search"}
                 </button>
               </div>
+
               {foundUser && (
                 <div className="mp-found">
                   <div className="mp-found-avatar">{foundUser.email[0].toUpperCase()}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div className="mp-name">{foundUser.email}</div>
-                    <div style={{fontSize:11,color:"#16a34a"}}>Ready to invite</div>
+                    <div style={{fontSize:11,marginTop:2,color:foundUser.id?"#16a34a":"#b45309"}}>
+                      {foundUser.id
+                        ? "✓ NkoAha account found — invite goes to their inbox"
+                        : "⚠ Not on NkoAha yet — invite goes to their email"}
+                    </div>
                   </div>
                   <button className="mp-modal-btn primary" onClick={sendInvite} disabled={inviteLoading}>
-                    {inviteLoading?"Sending…":"Send Invite"}
+                    {inviteLoading
+                      ? "Sending…"
+                      : foundUser.id ? "📬 Send to Inbox" : "📧 Send Email Invite"}
                   </button>
                 </div>
               )}
+
               {inviteMsg && <div className={`mp-msg ${inviteMsg.type}`}>{inviteMsg.msg}</div>}
+
               <div className="mp-modal-footer">
                 <button className="mp-modal-btn ghost" onClick={()=>setShowModal(false)}>Close</button>
               </div>

@@ -22,6 +22,8 @@ import InboxPage from "./dashboard/inbox/InboxPage";
 import DashboardLayout from "./dashboard/layout/DashboardLayout";
 import DocumentsPage from "./dashboard/documents/DocumentsPage";
 import NavigationLoader from "./auth/NavigationLoader";
+import JoinOrg from "./auth/JoinOrg";
+import MFASetupInvite from "./auth/MFASetupInvite";
 
 function App() {
   return (
@@ -33,10 +35,12 @@ function App() {
         <Route path="/signup" element={<SignupSelect />} />
         <Route path="/signup/individual" element={<IndividualSignup />} />
         <Route path="/signup/organization" element={<OrganizationSignup />} />
-        <Route path="/mfa-setup" element={<MFASetup />} />
+        <Route path="/mfa" element={<MFASetup />} />
         <Route path="/mfa-verify" element={<MFAVerify />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+         <Route path="/join-org" element={<JoinOrg />} />
+          <Route path="/mfa-setup" element={<MFASetupInvite />} />
 
         {/* Onboarding */}
         <Route path="/individual"  element={<ProtectedRoute><IndividualOnboarding /></ProtectedRoute>} />
@@ -51,11 +55,7 @@ function App() {
             <DashboardLayout><DocumentsPage /></DashboardLayout>
           </ProtectedRoute>
         } />
-        <Route path="/dashboard/send" element={
-          <ProtectedRoute>
-            <DashboardLayout><div>Send Page</div></DashboardLayout>
-          </ProtectedRoute>
-        } />
+       
         <Route path="/dashboard/inbox/inboxpage" element={
           <ProtectedRoute><InboxPage /></ProtectedRoute>
         } />
