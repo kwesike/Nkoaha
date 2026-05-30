@@ -805,9 +805,245 @@ export default function DocumentsPage() {
     sigUrl:string, docTitleStr:string
   )=>{
     const now=new Date();
+    const logoUrl = supabase.storage.from("assets").getPublicUrl("nkoaha-logo.png").data.publicUrl;
     const certId=`NKA-${docId.slice(0,6).toUpperCase()}-${recipientId.slice(0,6).toUpperCase()}-${now.getFullYear()}`;
     const docRef=`DOC-${docId.slice(0,8).toUpperCase()}`;
     const actionLabel=actionType==="signed"?"Approved & Signed":actionType==="approved"?"Approved & Forwarded":"Declined";
+
+    // ── Enrich certificate with relationship context ──
+    // Determine: individual↔individual, org members (same org), or partnership (different orgs)
+    const { data: recipientProfile } = await supabase
+      .from("profiles").select("id,email,avatar_url,role,organization_id").eq("id",recipientId).single();
+    const { data: docRow2 } = await supabase
+      .from("documents").select("owner_id,title").eq("id",docId).single();
+    const ownerId = docRow2?.owner_id || "";
+    const { data: ownerProfile } = await supabase
+      .from("profiles").select("id,email,avatar_url,role,organization_id").eq("id",ownerId).single();
+
+    // Fetch all route recipients for full chain context
+    const { data: allRoutes } = await supabase
+      .from("document_routes")
+      .select("recipient_id,route_order,status")
+      .eq("document_id",docId)
+      .order("route_order",{ascending:true});
+    const chainIds = (allRoutes||[]).map((r:any)=>r.recipient_id);
+
+    // Fetch profiles for all chain members
+    const { data: chainProfiles } = chainIds.length > 0
+      ? await supabase.from("profiles").select("id,email,avatar_url,organization_id,role").in("id",chainIds)
+      : { data: [] };
+    const profileMap: Record<string,any> = {};
+    for (const p of (chainProfiles||[])) profileMap[p.id] = p;
+    // Include owner
+    if (ownerProfile) profileMap[ownerId] = ownerProfile;
+
+    // Determine relationship type
+    const recipientOrgId = recipientProfile?.organization_id || null;
+    const ownerOrgId     = ownerProfile?.organization_id || null;
+
+    // Fetch orgs involved
+    let recipientOrg:any = null, ownerOrg:any = null;
+    if (recipientOrgId) {
+      const { data: ro } = await supabase.from("organizations").select("id,name,logo").eq("id",recipientOrgId).single();
+      recipientOrg = ro;
+    }
+    if (ownerOrgId && ownerOrgId !== recipientOrgId) {
+      const { data: oo } = await supabase.from("organizations").select("id,name,logo").eq("id",ownerOrgId).single();
+      ownerOrg = oo;
+    } else if (ownerOrgId && ownerOrgId === recipientOrgId) {
+      // same org
+      const { data: oo } = await supabase.from("organizations").select("id,name,logo").eq("id",ownerOrgId).single();
+      ownerOrg = oo; recipientOrg = oo;
+    }
+
+    // Also fetch org for any chain members from different orgs (partnership)
+    const partnerOrgIds = new Set<string>();
+    for (const p of Object.values(profileMap) as any[]) {
+      if (p.organization_id) partnerOrgIds.add(p.organization_id);
+    }
+    const { data: allOrgs } = partnerOrgIds.size > 0
+      ? await supabase.from("organizations").select("id,name,logo").in("id",[...partnerOrgIds])
+      : { data: [] };
+    const orgMap: Record<string,any> = {};
+    for (const o of (allOrgs||[])) orgMap[o.id] = o;
+
+    // Classify relationship
+    const uniqueOrgIds = new Set(
+      Object.values(profileMap).map((p:any)=>p.organization_id).filter(Boolean)
+    );
+    let relationshipType: "individual" | "org_internal" | "partnership" = "individual";
+    if (uniqueOrgIds.size >= 2) relationshipType = "partnership";
+    else if (uniqueOrgIds.size === 1) relationshipType = "org_internal";
+
+    // Resolve avatar URLs for individuals
+    const resolveAvatar = async (url:string|null): Promise<string> => {
+      if (!url) return "";
+      if (url.startsWith("http")) return url;
+      const { data } = await supabase.storage.from("avatars").createSignedUrl(url, 86400);
+      return data?.signedUrl || "";
+    };
+    const recipientAvatarUrl = await resolveAvatar(recipientProfile?.avatar_url || null);
+    const ownerAvatarUrl     = await resolveAvatar(ownerProfile?.avatar_url || null);
+
+    // Build relationship banner HTML
+    const avatarCircle = (name:string, email:string, avatarUrl:string, role:string, orgName?:string) => `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:120px;max-width:160px">
+        ${avatarUrl
+          ? `<img src="${avatarUrl}" crossorigin="anonymous"
+               style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:3px solid #ede9fe;"
+               onerror="this.style.display='none'"/>`
+          : `<div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a855f7);
+               display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;border:3px solid #ede9fe;">
+               ${name[0]?.toUpperCase()||"?"}
+             </div>`
+        }
+        <div style="text-align:center">
+          <div style="font-size:13px;font-weight:700;color:#1c1917">${name}</div>
+          <div style="font-size:10px;color:#78716c">${email}</div>
+          ${orgName ? `<div style="font-size:10px;background:#ede9fe;color:#7c3aed;padding:2px 8px;border-radius:20px;margin-top:3px;font-weight:600">${orgName}</div>` : ""}
+        </div>
+      </div>`;
+
+    const orgLogoBlock = (org:any) => org
+      ? `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:120px;max-width:160px">
+          ${org.logo
+            ? `<img src="${org.logo}" crossorigin="anonymous"
+                 style="width:56px;height:56px;border-radius:12px;object-fit:cover;border:2px solid #ede9fe;"
+                 onerror="this.style.display='none'"/>`
+            : `<div style="width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,#7c3aed,#a855f7);
+                 display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;">
+                 ${org.name[0]?.toUpperCase()||"?"}
+               </div>`
+          }
+          <div style="text-align:center">
+            <div style="font-size:13px;font-weight:700;color:#1c1917">${org.name}</div>
+            <div style="font-size:10px;color:#78716c">Organisation</div>
+          </div>
+        </div>`
+      : "";
+
+    // Build the context-specific relationship section
+    let relationshipBanner = "";
+    let declarationText    = "";
+
+    if (relationshipType === "partnership") {
+      // Find the orgs of owner and recipient
+      const ownerOrgData     = ownerOrgId     ? orgMap[ownerOrgId]     : null;
+      const recipientOrgData = recipientOrgId ? orgMap[recipientOrgId] : null;
+      declarationText = `This document was processed as part of an inter-organisational partnership workflow between
+        <strong>${ownerOrgData?.name || "an organisation"}</strong> and
+        <strong>${recipientOrgData?.name || "a partner organisation"}</strong>.
+        ${recipientEmail.split("@")[0]} of ${recipientOrgData?.name || "the partner organisation"}
+        performed the above action on behalf of their organisation in response to a document
+        originating from ${ownerOrgData?.name || "the initiating organisation"}.`;
+      relationshipBanner = `
+        <div style="padding:20px 40px;background:#faf9f8;border-bottom:1px solid #f0ede8">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:14px;text-align:center">
+            Inter-Organisational Partnership
+          </div>
+          <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap">
+            ${orgLogoBlock(ownerOrgData)}
+            <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+              <div style="font-size:20px">🤝</div>
+              <div style="font-size:9px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Partnership</div>
+            </div>
+            ${orgLogoBlock(recipientOrgData)}
+          </div>
+          <div style="margin-top:16px;border-top:1px solid #e7e4df;padding-top:14px">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:10px;text-align:center">
+              Signatory
+            </div>
+            <div style="display:flex;justify-content:center">
+              ${avatarCircle(
+                recipientEmail.split("@")[0], recipientEmail,
+                recipientAvatarUrl, recipientProfile?.role||"",
+                recipientOrgData?.name
+              )}
+            </div>
+          </div>
+        </div>`;
+    } else if (relationshipType === "org_internal") {
+      const sharedOrg = ownerOrg || recipientOrg;
+      declarationText = `This document was processed as part of an internal organisational workflow within
+        <strong>${sharedOrg?.name || "the organisation"}</strong>.
+        ${ownerProfile?.email?.split("@")[0] || "The initiator"} initiated this document and
+        ${recipientEmail.split("@")[0]} ${actionLabel.toLowerCase()} it — both acting as members of
+        ${sharedOrg?.name || "the same organisation"}.`;
+      relationshipBanner = `
+        <div style="padding:20px 40px;background:#faf9f8;border-bottom:1px solid #f0ede8">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:14px;text-align:center">
+            Internal Organisational Workflow
+          </div>
+          <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap">
+            ${avatarCircle(
+              ownerProfile?.email?.split("@")[0]||"Initiator",
+              ownerProfile?.email||"", ownerAvatarUrl,
+              ownerProfile?.role||"", sharedOrg?.name
+            )}
+            <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+              <div style="font-size:20px">→</div>
+              <div style="font-size:9px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Routed To</div>
+            </div>
+            ${avatarCircle(
+              recipientEmail.split("@")[0], recipientEmail,
+              recipientAvatarUrl, recipientProfile?.role||"", sharedOrg?.name
+            )}
+          </div>
+          <div style="margin-top:14px;display:flex;justify-content:center">
+            ${orgLogoBlock(sharedOrg)}
+          </div>
+        </div>`;
+    } else {
+      // Individual ↔ Individual
+      declarationText = `This document was processed as an individual-to-individual workflow on NkoAha.
+        ${ownerProfile?.email?.split("@")[0] || "The initiator"} created and routed this document,
+        and ${recipientEmail.split("@")[0]} ${actionLabel.toLowerCase()} it — both acting as
+        independent individuals on the NkoAha platform.`;
+      relationshipBanner = `
+        <div style="padding:20px 40px;background:#faf9f8;border-bottom:1px solid #f0ede8">
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:14px;text-align:center">
+            Individual-to-Individual Workflow
+          </div>
+          <div style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap">
+            ${avatarCircle(
+              ownerProfile?.email?.split("@")[0]||"Initiator",
+              ownerProfile?.email||"", ownerAvatarUrl,
+              "individual"
+            )}
+            <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+              <div style="font-size:20px">📄</div>
+              <div style="font-size:9px;color:#a78bfa;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Signed By</div>
+            </div>
+            ${avatarCircle(
+              recipientEmail.split("@")[0], recipientEmail,
+              recipientAvatarUrl, "individual"
+            )}
+          </div>
+        </div>`;
+    }
+
+    // Build approval chain summary
+    const chainHtml = (allRoutes||[]).map((r:any,i:number) => {
+      const p  = profileMap[r.recipient_id];
+      const em = p?.email || "Unknown";
+      const orgId = p?.organization_id;
+      const orgName = orgId ? orgMap[orgId]?.name : null;
+      const isMe = r.recipient_id === recipientId;
+      const statusColor = r.status==="completed"?"#16a34a":r.status==="declined"?"#dc2626":r.status==="pending"?"#b45309":"#78716c";
+      const statusLabel = r.status==="completed"?"✓":r.status==="declined"?"✗":r.status==="pending"?"⏳":"○";
+      return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;${i<(allRoutes||[]).length-1?"border-bottom:1px solid #faf9f8":""}">
+        <div style="width:22px;height:22px;border-radius:50%;background:${isMe?"#7c3aed":statusColor};color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${r.route_order}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:${isMe?"700":"500"};color:${isMe?"#7c3aed":"#1c1917"}">${em.split("@")[0]}${isMe?" ← This Signatory":""}</div>
+          ${orgName?`<div style="font-size:10px;color:#78716c">${orgName}</div>`:""}
+        </div>
+        <div style="font-size:12px;color:${statusColor};font-weight:700">${statusLabel} ${r.status}</div>
+      </div>`;
+    }).join("");
+
+    // Relationship type badge
+    const relBadgeColor = relationshipType==="partnership"?"#2563eb":relationshipType==="org_internal"?"#7c3aed":"#0d9488";
+    const relBadgeLabel = relationshipType==="partnership"?"🤝 Inter-Org Partnership":relationshipType==="org_internal"?"🏢 Intra-Org Workflow":"👤 Individual-to-Individual";
 
     const proofHtml=`<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><title>NkoAha Proof Certificate — ${certId}</title>
@@ -815,52 +1051,41 @@ export default function DocumentsPage() {
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap');
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:'DM Sans',sans-serif;background:#f5f3ef;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:40px 20px}
-  .cert{background:#fff;width:780px;max-width:100%;border:1px solid #e7e4df;box-shadow:0 8px 40px rgba(0,0,0,.12);position:relative;overflow:hidden}
-  /* Purple accent bar top */
+  .cert{background:#fff;width:800px;max-width:100%;border:1px solid #e7e4df;box-shadow:0 8px 40px rgba(0,0,0,.12);position:relative;overflow:hidden}
   .cert-top-bar{height:8px;background:linear-gradient(90deg,#7c3aed,#a855f7,#2563eb)}
-  /* Watermark */
   .cert-watermark{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-30deg);font-size:80px;font-weight:900;color:rgba(124,58,237,.04);pointer-events:none;white-space:nowrap;font-family:'DM Serif Display',serif;letter-spacing:.1em}
-  /* Header */
-  .cert-header{display:flex;align-items:center;justify-content:space-between;padding:28px 40px 24px;border-bottom:2px solid #ede9fe}
+  .cert-header{display:flex;align-items:center;justify-content:space-between;padding:24px 40px;border-bottom:2px solid #ede9fe}
   .cert-brand{display:flex;align-items:center;gap:12px}
-  .cert-logo-mark{width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#a855f7);border-radius:11px;display:flex;align-items:center;justify-content:center}
-  .cert-logo-mark svg{display:block}
   .cert-brand-text{font-size:22px;font-weight:800;color:#7c3aed;letter-spacing:-.02em}
   .cert-brand-sub{font-size:11px;color:#78716c;margin-top:1px}
   .cert-cert-label{text-align:right}
   .cert-cert-title{font-size:13px;font-weight:700;color:#1c1917;text-transform:uppercase;letter-spacing:.1em}
   .cert-cert-id{font-size:11px;color:#78716c;font-family:monospace;margin-top:4px}
-  /* Declaration */
-  .cert-declaration{padding:28px 40px;text-align:center;border-bottom:1px solid #f5f3ef}
-  .cert-decl-heading{font-family:'DM Serif Display',serif;font-size:22px;color:#1c1917;margin-bottom:8px;font-style:italic}
-  .cert-decl-text{font-size:13.5px;color:#78716c;line-height:1.7;max-width:560px;margin:0 auto}
-  /* Fields */
-  .cert-fields{padding:24px 40px;display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #f5f3ef}
-  .cert-field{padding:12px 0;border-bottom:1px solid #f5f3ef}
+  .cert-declaration{padding:22px 40px;text-align:center;border-bottom:1px solid #f5f3ef}
+  .cert-decl-heading{font-family:'DM Serif Display',serif;font-size:21px;color:#1c1917;margin-bottom:8px;font-style:italic}
+  .cert-decl-text{font-size:13px;color:#78716c;line-height:1.7;max-width:580px;margin:0 auto}
+  .cert-fields{padding:20px 40px;display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #f5f3ef}
+  .cert-field{padding:10px 0;border-bottom:1px solid #f5f3ef}
   .cert-field:nth-last-child(-n+2){border-bottom:none}
   .cert-field-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:4px}
-  .cert-field-value{font-size:14px;font-weight:600;color:#1c1917}
+  .cert-field-value{font-size:13.5px;font-weight:600;color:#1c1917}
   .cert-field.full{grid-column:1/-1}
-  /* Action badge */
   .cert-action-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700}
   .cert-action-badge.approved{background:#dcfce7;color:#16a34a}
   .cert-action-badge.forwarded{background:#dbeafe;color:#2563eb}
   .cert-action-badge.declined{background:#fee2e2;color:#dc2626}
-  /* Signature section */
-  .cert-sig-section{padding:28px 40px;display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid #f5f3ef;gap:20px}
+  .cert-chain{padding:16px 40px;border-bottom:1px solid #f5f3ef}
+  .cert-chain-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:10px}
+  .cert-sig-section{padding:24px 40px;display:flex;align-items:flex-end;justify-content:space-between;border-bottom:1px solid #f5f3ef;gap:20px}
   .cert-sig-box{flex:1;max-width:240px}
   .cert-sig-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#a78bfa;margin-bottom:10px}
   .cert-sig-img-wrap{height:64px;border-bottom:2px solid #1c1917;display:flex;align-items:flex-end;padding-bottom:6px;min-width:200px}
   .cert-sig-img{max-height:56px;object-fit:contain;display:block}
   .cert-sig-name{font-size:12px;color:#78716c;margin-top:6px}
   .cert-issuer{text-align:center;flex:1}
-  .cert-issuer-text{font-size:11px;color:#a8a29e;margin-bottom:6px}
-  .cert-issuer-name{font-size:18px;font-weight:900;color:#7c3aed;letter-spacing:.04em}
-  .cert-issuer-sub{font-size:10px;color:#a8a29e;margin-top:2px}
   .cert-stamp{width:80px;height:80px;border:3px solid #7c3aed;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7c3aed;transform:rotate(-12deg);flex-shrink:0}
   .cert-stamp-check{font-size:22px;line-height:1}
   .cert-stamp-text{font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;text-align:center;margin-top:2px}
-  /* Footer */
   .cert-footer{padding:14px 40px;background:#faf9f8;display:flex;align-items:center;justify-content:space-between}
   .cert-footer-note{font-size:10px;color:#a8a29e;font-family:monospace}
   .cert-print-btn{padding:8px 18px;background:#7c3aed;color:#fff;border:none;border-radius:7px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;cursor:pointer}
@@ -875,18 +1100,16 @@ export default function DocumentsPage() {
 <div class="cert">
   <div class="cert-top-bar"></div>
   <div class="cert-watermark">NKOAHA</div>
+
+  <!-- Header -->
   <div class="cert-header">
     <div class="cert-brand">
-      <div class="cert-logo-mark" style="background:none;padding:0;overflow:visible;border-radius:0;">
-        <img src="https://nkoaha.space/nkoaha-logo.png" alt="NkoAha"
-          style="width:44px;height:44px;object-fit:contain;border-radius:11px;"
+      <div style="width:44px;height:44px;flex-shrink:0">
+        <img src="${logoUrl}" alt="NkoAha"
+          style="width:44px;height:44px;object-fit:contain;border-radius:11px;display:block"
           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
         <div style="display:none;width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#a855f7);border-radius:11px;align-items:center;justify-content:center;">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-          </svg>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         </div>
       </div>
       <div>
@@ -897,21 +1120,23 @@ export default function DocumentsPage() {
     <div class="cert-cert-label">
       <div class="cert-cert-title">Proof of Document Action</div>
       <div class="cert-cert-id">Certificate No: ${certId}</div>
+      <div style="margin-top:6px;display:inline-block;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;background:${relBadgeColor}1a;color:${relBadgeColor}">${relBadgeLabel}</div>
     </div>
   </div>
 
+  <!-- Relationship context banner -->
+  ${relationshipBanner}
+
+  <!-- Declaration -->
   <div class="cert-declaration">
     <div class="cert-decl-heading">Certificate of Document Participation</div>
-    <div class="cert-decl-text">
-      This is to officially declare and certify that the individual named herein has duly participated
-      in the document workflow process on the NkoAha platform, and has performed the action
-      described below in accordance with the established routing chain.
-    </div>
+    <div class="cert-decl-text">${declarationText}</div>
   </div>
 
+  <!-- Fields -->
   <div class="cert-fields">
     <div class="cert-field">
-      <div class="cert-field-label">Recipient Name</div>
+      <div class="cert-field-label">Signatory Name</div>
       <div class="cert-field-value">${recipientEmail.split("@")[0]}</div>
     </div>
     <div class="cert-field">
@@ -923,7 +1148,7 @@ export default function DocumentsPage() {
       <div class="cert-field-value">${docTitleStr}</div>
     </div>
     <div class="cert-field">
-      <div class="cert-field-label">Document Reference No.</div>
+      <div class="cert-field-label">Document Reference</div>
       <div class="cert-field-value" style="font-family:monospace;color:#7c3aed">${docRef}</div>
     </div>
     <div class="cert-field">
@@ -935,8 +1160,16 @@ export default function DocumentsPage() {
       </div>
     </div>
     <div class="cert-field">
-      <div class="cert-field-label">Position in Approval Chain</div>
-      <div class="cert-field-value">Step ${routeOrder} of ${totalSteps}${routeOrder===totalSteps?" (Final Approver)":""}</div>
+      <div class="cert-field-label">Position in Chain</div>
+      <div class="cert-field-value">Step ${routeOrder} of ${totalSteps}${routeOrder===totalSteps?" · Final Approver":""}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Workflow Type</div>
+      <div class="cert-field-value">${relBadgeLabel}</div>
+    </div>
+    <div class="cert-field">
+      <div class="cert-field-label">Initiated By</div>
+      <div class="cert-field-value">${ownerProfile?.email?.split("@")[0]||"—"} · ${ownerProfile?.email||"—"}</div>
     </div>
     <div class="cert-field">
       <div class="cert-field-label">Date & Time of Action</div>
@@ -948,9 +1181,16 @@ export default function DocumentsPage() {
     </div>
   </div>
 
+  <!-- Approval chain -->
+  <div class="cert-chain">
+    <div class="cert-chain-title">Full Approval Chain (${totalSteps} step${totalSteps!==1?"s":""})</div>
+    ${chainHtml}
+  </div>
+
+  <!-- Signature section -->
   <div class="cert-sig-section">
     <div class="cert-sig-box">
-      <div class="cert-sig-label">Signature of Recipient</div>
+      <div class="cert-sig-label">Signature of Signatory</div>
       <div class="cert-sig-img-wrap">
         ${sigUrl
           ?`<img src="${sigUrl}" class="cert-sig-img" crossorigin="anonymous"/>`
@@ -960,9 +1200,9 @@ export default function DocumentsPage() {
       <div class="cert-sig-name">${recipientEmail.split("@")[0]} · ${recipientEmail}</div>
     </div>
     <div class="cert-issuer">
-      <div class="cert-issuer-text">Certified and Issued by</div>
-      <div class="cert-issuer-name">NkoAha</div>
-      <div class="cert-issuer-sub">Document Management Platform</div>
+      <div style="font-size:11px;color:#a8a29e;margin-bottom:6px">Certified and Issued by</div>
+      <div style="font-size:18px;font-weight:900;color:#7c3aed;letter-spacing:.04em">NkoAha</div>
+      <div style="font-size:10px;color:#a8a29e;margin-top:2px">Document Management Platform</div>
     </div>
     <div class="cert-stamp">
       <div class="cert-stamp-check">✓</div>
@@ -970,11 +1210,12 @@ export default function DocumentsPage() {
     </div>
   </div>
 
+  <!-- Footer -->
   <div class="cert-footer">
     <div class="cert-footer-note">
-      Cert No: ${certId} &nbsp;|&nbsp; Doc Ref: ${docRef} &nbsp;|&nbsp; Issued: ${now.toISOString()} &nbsp;|&nbsp; nkoaha.space
+      Cert: ${certId} &nbsp;|&nbsp; Doc: ${docRef} &nbsp;|&nbsp; ${now.toISOString()} &nbsp;|&nbsp; nkoaha.space
     </div>
-    <button class="cert-print-btn" onclick="window.print()">🖨️ Print Certificate</button>
+    <button class="cert-print-btn" onclick="if(!window._printed){window._printed=true;window.print();}">🖨️ Print Certificate</button>
   </div>
 </div>
 </body></html>`;
@@ -995,7 +1236,6 @@ export default function DocumentsPage() {
 
     const proofSummary=`${recipientEmail.split("@")[0]} ${actionLabel} "${docTitleStr}" — Step ${routeOrder} of ${totalSteps}`;
 
-    // Notify recipient in inbox with certificate data
     await supabase.from("activity_logs").insert({
       user_id:     recipientId,
       action:      "proof_issued",
@@ -1008,15 +1248,14 @@ export default function DocumentsPage() {
         doc_ref:        docRef,
         status:         "pending",
         proof_summary:  `Your Proof certificate has been issued: ${actionLabel} "${docTitleStr}" (Step ${routeOrder}/${totalSteps})`,
-        proof_html:     proofHtml, // stored so inbox can render/open it
+        proof_html:     proofHtml,
       },
     });
 
-    // Notify initiator in inbox
-    const{data:docRow}=await supabase.from("documents").select("owner_id").eq("id",docId).single();
-    if(docRow?.owner_id && docRow.owner_id!==recipientId){
+    const{data:docRow3}=await supabase.from("documents").select("owner_id").eq("id",docId).single();
+    if(docRow3?.owner_id && docRow3.owner_id!==recipientId){
       await supabase.from("activity_logs").insert({
-        user_id:     docRow.owner_id,
+        user_id:     docRow3.owner_id,
         action:      "proof_issued",
         document_id: docId,
         metadata:{
