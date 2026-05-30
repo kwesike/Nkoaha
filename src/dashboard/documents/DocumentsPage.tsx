@@ -877,12 +877,17 @@ export default function DocumentsPage() {
   <div class="cert-watermark">NKOAHA</div>
   <div class="cert-header">
     <div class="cert-brand">
-      <div class="cert-logo-mark">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-        </svg>
+      <div class="cert-logo-mark" style="background:none;padding:0;overflow:visible;border-radius:0;">
+        <img src="https://nkoaha.space/nkoaha-logo.png" alt="NkoAha"
+          style="width:44px;height:44px;object-fit:contain;border-radius:11px;"
+          onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
+        <div style="display:none;width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#a855f7);border-radius:11px;align-items:center;justify-content:center;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+        </div>
       </div>
       <div>
         <div class="cert-brand-text">NkoAha</div>
@@ -967,7 +972,7 @@ export default function DocumentsPage() {
 
   <div class="cert-footer">
     <div class="cert-footer-note">
-      Cert No: ${certId} &nbsp;|&nbsp; Doc Ref: ${docRef} &nbsp;|&nbsp; Issued: ${now.toISOString()} &nbsp;|&nbsp; nkoaha.com
+      Cert No: ${certId} &nbsp;|&nbsp; Doc Ref: ${docRef} &nbsp;|&nbsp; Issued: ${now.toISOString()} &nbsp;|&nbsp; nkoaha.space
     </div>
     <button class="cert-print-btn" onclick="window.print()">🖨️ Print Certificate</button>
   </div>
@@ -1534,18 +1539,20 @@ export default function DocumentsPage() {
     if(total===0)return[];
 
     const images:string[]=[];
+    // Get all pdf-stage elements to use their actual rendered dimensions
+    const stages = canvasAreaRef.current?.querySelectorAll(".dp-pdf-stage") ?? [];
     for(let i=0;i<total;i++){
       const base=refs.current[i];
       if(!base||base.width===0)continue;
 
-      // ── Key: canvas pixel size vs displayed CSS size ──
-      // Overlays are placed as % of the dp-pdf-stage div which matches
-      // the canvas CSS display size (style.width / style.height set by renderPdfPage).
-      // The canvas backing store (base.width/height) is at devicePixelRatio scale.
-      // So: overlay% → CSS pixels → scale up to canvas pixels for drawing.
-      const dispW = parseFloat(base.style.width)  || 816;
-      const dispH = parseFloat(base.style.height) || Math.round(base.height * (dispW / base.width));
-      const scaleX = base.width  / dispW;  // canvas pixels per CSS pixel (= devicePixelRatio ≈ 2)
+      // ── Use the actual rendered stage dimensions for overlay positioning ──
+      // Overlays are placed as % of the dp-pdf-stage div.
+      // We read the stage's real getBoundingClientRect for accuracy.
+      const stage = stages[i] as HTMLElement | undefined;
+      const stageRect = stage?.getBoundingClientRect();
+      const dispW = stageRect?.width  || parseFloat(base.style.width)  || 816;
+      const dispH = stageRect?.height || parseFloat(base.style.height) || Math.round(base.height * (dispW / base.width));
+      const scaleX = base.width  / dispW;
       const scaleY = base.height / dispH;
 
       const merged=document.createElement("canvas");
@@ -1637,11 +1644,15 @@ export default function DocumentsPage() {
       </head><body>
       <div class="page-wrap">${bodyHtml}</div>
       <script>
-        // Auto open print dialog so user can Save as PDF
-        window.onload=function(){
-          document.title="${safeTitle}";
-          setTimeout(function(){window.print();},400);
+        var _printed = false;
+        window.onload = function(){
+          document.title = "${safeTitle}";
+          if (!_printed) {
+            _printed = true;
+            setTimeout(function(){ window.print(); }, 400);
+          }
         };
+        window.onafterprint = function(){ _printed = true; };
       <\/script>
       </body></html>`;
 
