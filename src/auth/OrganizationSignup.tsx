@@ -94,7 +94,7 @@ export default function OrganizationSignup() {
   });
 
   setLoading(false);
-  navigate("/mfa-setup");
+  navigate("/mfa");
 };
 
 

@@ -70,7 +70,7 @@ export default function IndividualSignup() {
 
       {
       // normal individual flow
-      navigate("/mfa-setup");
+      navigate("/mfa");
     }
 
     setLoading(false);

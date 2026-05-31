@@ -886,7 +886,7 @@ export default function DocumentsPage() {
     const ownerAvatarUrl     = await resolveAvatar(ownerProfile?.avatar_url || null);
 
     // Build relationship banner HTML
-    const avatarCircle = (name:string, email:string, avatarUrl:string, role:string, orgName?:string) => `
+    const avatarCircle = (name:string, email:string, avatarUrl:string, _role:string, orgName?:string) => `
       <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:120px;max-width:160px">
         ${avatarUrl
           ? `<img src="${avatarUrl}" crossorigin="anonymous"
@@ -1276,24 +1276,37 @@ export default function DocumentsPage() {
   const checkDocLimit=async(userId:string):Promise<boolean>=>{
     // Returns true if user can create more documents
     const{data:sub}=await supabase.from("subscriptions")
-      .select("org_doc_limit,doc_quota,plan_type,period")
+      .select("org_doc_limit,doc_quota,plan_type,period,activated_at,created_at,expires_at")
       .eq("user_id",userId).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
 
     if(!sub) return true; // no subscription = free tier, handled separately
 
-    // Org doc limit (Starter: 45 total)
-    if(sub.org_doc_limit!==null&&sub.org_doc_limit!==undefined){
+    // ── Auto-expire if past expiry date ──
+    if(sub.expires_at && new Date(sub.expires_at) < new Date()){
+      await supabase.from("subscriptions")
+        .update({status:"expired",updated_at:new Date().toISOString()})
+        .eq("user_id",userId).eq("status","active");
+      return true; // drop to free tier limits
+    }
+
+    // ── Org doc limit: resets monthly regardless of plan period ──
+    // Starter=100/month, Growth=500/month, Enterprise=unlimited
+    if(sub.org_doc_limit!==null&&sub.org_doc_limit!==undefined&&sub.plan_type==="organization"){
+      const now=new Date();
+      const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
       const{count}=await supabase.from("documents")
         .select("id",{count:"exact",head:true})
-        .eq("owner_id",userId).neq("status","deleted");
+        .eq("owner_id",userId).neq("status","deleted")
+        .gte("created_at",monthStart.toISOString());
       if((count||0)>=sub.org_doc_limit){
-        alert(`Your Starter plan includes up to ${sub.org_doc_limit} documents. Upgrade to Growth or Enterprise in Billing for unlimited documents.`);
+        const planName=sub.org_doc_limit===100?"Starter":sub.org_doc_limit===500?"Growth":"your";
+        alert(`Your ${planName} plan allows ${sub.org_doc_limit} documents per month. You've reached this month's limit. It resets on the 1st of next month, or upgrade your plan in Billing for a higher limit.`);
         return false;
       }
     }
 
-    // Individual doc quota (daily/weekly/monthly)
+    // Individual doc quota (daily/weekly/monthly/yearly)
     if(sub.doc_quota!==null&&sub.doc_quota!==undefined&&sub.plan_type==="individual"){
       const now=new Date();
       let since=new Date();
@@ -1323,11 +1336,13 @@ export default function DocumentsPage() {
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
 
     if(sub?.org_doc_limit){
+      const monthStart=new Date();monthStart.setDate(1);monthStart.setHours(0,0,0,0);
       const{count:docCount}=await supabase.from("documents")
         .select("id",{count:"exact",head:true})
-        .eq("owner_id",user.id).neq("status","deleted");
+        .eq("owner_id",user.id).neq("status","deleted")
+        .gte("created_at",monthStart.toISOString());
       if((docCount||0)>=sub.org_doc_limit){
-        alert(`Your Starter plan allows up to ${sub.org_doc_limit} documents. You have ${docCount}. Please upgrade your plan in Billing.`);
+        alert(`Your plan allows ${sub.org_doc_limit} documents per month. You've reached this month's limit — resets on the 1st, or upgrade in Billing.`);
         return;
       }
     }
@@ -1356,11 +1371,13 @@ export default function DocumentsPage() {
       .eq("user_id",user.id).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
     if(sub?.org_doc_limit){
+      const monthStart=new Date();monthStart.setDate(1);monthStart.setHours(0,0,0,0);
       const{count:docCount}=await supabase.from("documents")
         .select("id",{count:"exact",head:true})
-        .eq("owner_id",user.id).neq("status","deleted");
+        .eq("owner_id",user.id).neq("status","deleted")
+        .gte("created_at",monthStart.toISOString());
       if((docCount||0)>=sub.org_doc_limit){
-        alert(`Your Starter plan allows up to ${sub.org_doc_limit} documents. You have ${docCount}. Please upgrade your plan in Billing.`);
+        alert(`Your plan allows ${sub.org_doc_limit} documents per month. You've reached this month's limit — resets on the 1st, or upgrade in Billing.`);
         return;
       }
     }
@@ -1440,7 +1457,7 @@ export default function DocumentsPage() {
   const openRoutingModal=async()=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     const{data:myProfile}=await supabase.from("profiles").select("role,organization_id").eq("id",user.id).single();
-    const role=myProfile?.role;
+    const role=myProfile?.role; // used in buildQuery below
     const orgId=myProfile?.organization_id||null;
     setCurrentOrgId(orgId);
 

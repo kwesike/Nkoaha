@@ -1,5 +1,5 @@
 {
   "imports": {
-    "jsr/": "https://jsr.io/"
+    "web-push": "https://esm.sh/web-push@3.6.7"
   }
 }

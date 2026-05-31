@@ -188,6 +188,18 @@ export default function OrgMembersPage() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
+    // ── Enforce plan member limits for BOTH paths ──
+    const activeCount = members.filter(m => !m.isPending && m.status === "active").length;
+    const pendingCount = members.filter(m => m.isPending).length;
+    const totalCount = activeCount + pendingCount;
+    if (planLimit !== Infinity && totalCount >= planLimit) {
+      setInviteMsg({
+        type: "error",
+        msg: `Your plan allows up to ${planLimit} members (you have ${activeCount} active + ${pendingCount} pending). Remove a member or upgrade in Billing to add more.`,
+      });
+      setInviteLoading(false); return;
+    }
+
     // ── PATH A: Not registered — send email invite via magic link ──
     if (foundUser.id === "") {
       const token    = `${orgId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
@@ -225,16 +237,6 @@ export default function OrgMembersPage() {
     }
 
     // ── PATH B: Registered user — inbox only, no email ──
-
-    // Enforce plan member limits
-    const activeCount = members.filter(m => !m.isPending && m.status === "active").length;
-    if (planLimit !== Infinity && activeCount >= planLimit) {
-      setInviteMsg({
-        type: "error",
-        msg: `Your plan allows up to ${planLimit} members (you have ${activeCount}). Upgrade in Billing to add more.`,
-      });
-      setInviteLoading(false); return;
-    }
 
     // Record invite
     const { error: invErr } = await supabase.from("organization_invites").insert({

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { supabase } from ".././lib/supabase";
+import { subscribeToPush, unsubscribeFromPush, isPushSubscribed } from "../hooks/usePushNotifications";
+import { supabase } from "./../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 const STYLES = `
@@ -102,6 +103,67 @@ function MFAStatus() {
   );
 }
 
+function PushNotificationToggle() {
+  const [subscribed, setSubscribed] = useState<boolean|null>(null);
+  const [loading, setLoading]       = useState(false);
+
+  useEffect(() => {
+    isPushSubscribed().then(setSubscribed);
+  }, []);
+
+  async function toggle() {
+    setLoading(true);
+    if (subscribed) {
+      await unsubscribeFromPush();
+      setSubscribed(false);
+    } else {
+      const ok = await subscribeToPush();
+      setSubscribed(ok);
+      if (!ok && Notification.permission === "denied") {
+        alert("Notifications are blocked in your browser. Go to browser Settings → Site Settings → Notifications to allow them for this site.");
+      }
+    }
+    setLoading(false);
+  }
+
+  if (subscribed === null) return (
+    <div style={{padding:"14px 20px",fontSize:13,color:"var(--muted)"}}>Checking notification status…</div>
+  );
+
+  return (
+    <div className="st-row">
+      <div className="st-row-value">
+        <div className="st-toggle" style={{marginBottom:8}}>
+          <div className={`st-toggle-track ${subscribed?"on":""}`} onClick={loading?undefined:toggle} style={{cursor:loading?"not-allowed":"pointer",opacity:loading?.6:1}}>
+            <div className="st-toggle-thumb"/>
+          </div>
+          <div>
+            <div style={{fontSize:13,fontWeight:500,color:"var(--text)"}}>
+              Push Notifications
+              {subscribed && <span style={{marginLeft:8,fontSize:10,background:"var(--green-bg)",color:"var(--green)",padding:"2px 7px",borderRadius:20,fontWeight:700}}>ON</span>}
+            </div>
+            <div style={{fontSize:11,color:"var(--muted)"}}>
+              {subscribed
+                ? "You'll receive notifications for documents, messages, and invites even when the app is closed"
+                : "Enable to get notified about documents, messages, invites and more"}
+            </div>
+          </div>
+        </div>
+        {Notification.permission === "denied" && (
+          <div style={{fontSize:11.5,color:"var(--red)",background:"var(--red-bg)",padding:"8px 12px",borderRadius:7,marginTop:6}}>
+            ⚠️ Notifications are blocked in your browser. Enable them in browser Settings → Site Settings.
+          </div>
+        )}
+        {subscribed && (
+          <div style={{fontSize:11.5,color:"var(--green)",marginTop:4}}>
+            ✓ You'll be notified for: document reviews, approvals, comments, org invites, partnership requests, and certificates
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [org, setOrg]         = useState<any>(null);
   const [email, setEmail]     = useState("");
@@ -117,8 +179,6 @@ export default function SettingsPage() {
   const [avatarUrl, setAvatarUrl] = useState("");
   const [sigUrl, setSigUrl]       = useState("");
   const [uploading, setUploading] = useState<"avatar"|"sig"|null>(null);
-  const [notifEmail, setNotifEmail] = useState(true);
-  const [notifInbox, setNotifInbox] = useState(true);
 
   useEffect(() => {
     const id = "st-styles";
@@ -349,27 +409,10 @@ export default function SettingsPage() {
             </div>
             <div>
               <div className="st-section-title">Notifications</div>
-              <div className="st-section-desc">Choose what you get notified about</div>
+              <div className="st-section-desc">Push and inbox notifications</div>
             </div>
           </div>
-          {[
-            { label:"Email notifications", desc:"Get emailed when documents are routed to you", val:notifEmail, set:setNotifEmail },
-            { label:"Inbox notifications", desc:"Show badge when new items arrive in your inbox", val:notifInbox, set:setNotifInbox },
-          ].map(n=>(
-            <div key={n.label} className="st-row">
-              <div className="st-row-value">
-                <div className="st-toggle">
-                  <div className={`st-toggle-track ${n.val?"on":""}`} onClick={()=>n.set(!n.val)}>
-                    <div className="st-toggle-thumb"/>
-                  </div>
-                  <div>
-                    <div style={{fontSize:13,fontWeight:500,color:"var(--text)"}}>{n.label}</div>
-                    <div style={{fontSize:11,color:"var(--muted)"}}>{n.desc}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
+          <PushNotificationToggle />
         </div>
 
         {/* Danger zone */}

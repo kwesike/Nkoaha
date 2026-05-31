@@ -18,21 +18,21 @@ function fmt(ngn: number, currency: Currency): string {
 const ORG_PLANS = [
   {
     id: "org_starter", name: "Starter", members: "Up to 10 members",
-    monthly: 30000, yearly: 90000,
-    features: ["Up to 10 team members","100 document uploads","Full routing chains","1 partnership max","Audit log","Email support"],
+    monthly: 105000, yearly: 595000,
+    features: ["Up to 10 team members","100 documents/month","Full routing chains","1 partnership max","Audit log"],
     color: "#7c3aed", bg: "#ede9fe",
   },
   {
     id: "org_growth", name: "Growth", members: "Up to 50 members",
-    monthly: 70000, yearly: 210000,
-    features: ["Up to 50 team members","500 document uploads","Everything in Starter","Unlimited partnerships","Priority support + live chat","Advanced audit logs"],
+    monthly: 395000, yearly: 855000,
+    features: ["Up to 50 team members","500 documents/month","Everything in Starter","Unlimited partnerships","Priority support + live chat"],
     color: "#2563eb", bg: "#dbeafe",
     popular: true,
   },
   {
     id: "org_enterprise", name: "Enterprise", members: "Unlimited members",
-    monthly: 250000, yearly: 500000,
-    features: ["Unlimited team members","Everything in Growth","Dedicated account manager","Custom onboarding","SLA guarantee","Custom integrations"],
+    monthly: 595000, yearly: 1300000,
+    features: ["Unlimited documents/month","Unlimited team members","Everything in Growth","Dedicated account manager","Custom onboarding"],
     color: "#b45309", bg: "#fef9c3",
   },
 ];
@@ -40,8 +40,8 @@ const ORG_PLANS = [
 const IND_PLANS = [
   { id: "ind_daily",   name: "Daily",   docs: "10 documents",  price: 3500,  period: "per day",   color: "#0d9488", bg: "#ccfbf1" },
   { id: "ind_weekly",  name: "Weekly",  docs: "30 documents",  price: 10000, period: "per week",  color: "#7c3aed", bg: "#ede9fe" },
-  { id: "ind_monthly", name: "Monthly", docs: "50 documents",  price: 20000, period: "per month", color: "#2563eb", bg: "#dbeafe", popular: true },
-  { id: "ind_yearly",  name: "Yearly",  docs: "Unlimited docs", price: 75000, period: "per year",  color: "#b45309", bg: "#fef9c3" },
+  { id: "ind_monthly", name: "Monthly", docs: "50 documents",  price: 25000, period: "per month", color: "#2563eb", bg: "#dbeafe", popular: true },
+  { id: "ind_yearly",  name: "Yearly",  docs: "Unlimited docs", price: 85000, period: "per year",  color: "#b45309", bg: "#fef9c3" },
 ];
 
 const STYLES = `
@@ -175,7 +175,7 @@ export default function BillingPage() {
       }
     }
 
-    // Fetch active subscription
+    // Fetch active subscription — auto-expire if past expiry date
     const { data: sub } = await supabase.from("subscriptions")
       .select("plan_id,status,expires_at,member_limit,doc_quota,partner_limit,org_doc_limit")
       .eq("user_id", user.id)
@@ -183,7 +183,19 @@ export default function BillingPage() {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (sub) setActiveSub(sub);
+    if (sub) {
+      const isExpired = sub.expires_at && new Date(sub.expires_at) < new Date();
+      if (isExpired) {
+        // Mark expired in DB so all enforcement checks see it immediately
+        await supabase.from("subscriptions")
+          .update({ status: "expired", updated_at: new Date().toISOString() })
+          .eq("user_id", user.id)
+          .eq("status", "active");
+        setActiveSub(null); // treat as free tier
+      } else {
+        setActiveSub(sub);
+      }
+    }
   }
 
   function getPrice(plan: any): number {
@@ -349,11 +361,23 @@ export default function BillingPage() {
             {activeSub ? (<>
               <div className="bl-free-title">
                 {activeSub.plan_id.replace('org_','').replace('ind_','').replace(/^\w/,(c:string)=>c.toUpperCase())} Plan Active
+                {activeSub.expires_at && (() => {
+                  const daysLeft = Math.ceil((new Date(activeSub.expires_at).getTime() - Date.now()) / 86400000);
+                  return daysLeft <= 7
+                    ? <span style={{marginLeft:8,fontSize:11,background:"rgba(255,255,255,.25)",padding:"2px 8px",borderRadius:20,fontWeight:700}}>
+                        ⚠ {daysLeft <= 0 ? "Expired" : `${daysLeft}d left`}
+                      </span>
+                    : null;
+                })()}
               </div>
               <div className="bl-free-desc">
                 {[
                   activeSub.member_limit ? `${activeSub.member_limit} members` : "Unlimited members",
-                  activeSub.org_doc_limit ? `${activeSub.org_doc_limit} docs` : activeSub.doc_quota ? `${activeSub.doc_quota} docs/period` : "Unlimited docs",
+                  activeSub.org_doc_limit
+                    ? `${activeSub.org_doc_limit} docs/month`
+                    : activeSub.doc_quota
+                    ? `${activeSub.doc_quota} docs/period`
+                    : "Unlimited docs/month",
                   activeSub.partner_limit === 1 ? "1 partnership" : "Unlimited partnerships",
                 ].join(" · ")} · Expires {new Date(activeSub.expires_at).toLocaleDateString()}
               </div>
@@ -455,6 +479,7 @@ export default function BillingPage() {
             : <ul style={{paddingLeft:18,margin:0,display:"flex",flexDirection:"column",gap:6,fontSize:12.5,color:"var(--muted)"}}>
                 <li>Your organisation gets a <strong>one-time free trial</strong> of 2 document actions.</li>
                 <li>Plans are based on the number of members in your organisation.</li>
+                <li><strong>Document allowance resets monthly</strong> — e.g. Starter gets 100 new documents every month for the duration of the plan.</li>
                 <li>Yearly plans offer significant savings vs monthly billing.</li>
                 <li>All payments are processed securely through <strong>Flutterwave</strong>.</li>
               </ul>
