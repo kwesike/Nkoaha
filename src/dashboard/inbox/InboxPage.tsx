@@ -12,6 +12,7 @@ interface InboxItem {
   created_at: string;
   status: "pending" | "actioned";
   is_final: boolean;
+  read_at?: string | null;
   step_order: number;
   total_steps: number;
 }
@@ -64,11 +65,6 @@ const STYLES = `
   @keyframes shimmer{0%{background-position:-600px 0}100%{background-position:600px 0}}
   .ib-skel{background:linear-gradient(90deg,#e9e7e4 25%,#f0ede8 50%,#e9e7e4 75%);background-size:600px 100%;animation:shimmer 1.5s infinite;border-radius:6px}
 `;
-
-const DOC_ACTIONS = new Set([
-  "document_received","document_comment","proof_issued",
-  "document_approved","document_signed","document_declined",
-]);
 
 function getIcon(action: string, is_final: boolean) {
   switch(action) {
@@ -135,6 +131,15 @@ export default function InboxPage() {
     loadInbox();
   }, []);
 
+  const markRead = async (item: InboxItem) => {
+    if (item.read_at) return;
+    await supabase.from("activity_logs")
+      .update({ read_at: new Date().toISOString() })
+      .eq("id", item.id);
+    setItems(prev => prev.map(i => i.id === item.id ? { ...i, read_at: new Date().toISOString() } : i));
+  };
+
+
   async function loadInbox() {
     setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
@@ -142,7 +147,7 @@ export default function InboxPage() {
 
     const { data } = await supabase
       .from("activity_logs")
-      .select("*")
+      .select("id, action, metadata, created_at, read_at")
       .eq("user_id", user.id)
       .in("action", [
         "document_received","org_invite_received","partnership_invite_received",
@@ -162,6 +167,7 @@ export default function InboxPage() {
       is_final:       row.metadata?.is_final || false,
       step_order:     row.metadata?.step_order || 1,
       total_steps:    row.metadata?.total_steps || 1,
+      read_at:        row.read_at || null,
     })));
     setLoading(false);
   }
@@ -232,11 +238,9 @@ export default function InboxPage() {
     loadInbox();
   }
 
-  // Notification-only actions — mark as read
-  async function markRead(item: InboxItem) {
-    await supabase.from("activity_logs").update({
-      metadata: { ...item.metadata, status: "actioned", actioned_at: new Date().toISOString() },
-    }).eq("id", item.id);
+  // openDoc: navigate to document page and mark item as read
+  async function openDoc(item: InboxItem) {
+    await markRead(item);
     if (item.document_id) {
       navigate("/dashboard/individual", { state: { openDocId: item.document_id } });
     } else {
@@ -267,7 +271,9 @@ export default function InboxPage() {
         <div className="ib-header">
           <div className="ib-title">
             Inbox
-            {pendingItems.length > 0 && <span className="ib-count">{pendingItems.length}</span>}
+            {items.filter((i:any)=>!i.read_at).length > 0 && (
+              <span className="ib-count">{items.filter((i:any)=>!i.read_at).length} unread</span>
+            )}
           </div>
           <div className="ib-tabs">
             <button className={`ib-tab${tab==="pending"?" active":""}`} onClick={()=>setTab("pending")}>
@@ -309,7 +315,7 @@ export default function InboxPage() {
               const isNotifOnly = ["document_comment","proof_issued","document_approved","document_signed","document_declined"].includes(item.action);
 
               return (
-                <div key={item.id} className={`ib-item ${item.status}`}>
+                <div key={item.id} className={`ib-item ${item.status}`} onClick={()=>markRead(item)} style={{borderLeft:!item.read_at?`3px solid #7c3aed`:`3px solid transparent`}}>
                   <div className="ib-icon" style={{ background: bg, color }}>{icon}</div>
 
                   <div className="ib-body">
@@ -378,7 +384,7 @@ export default function InboxPage() {
                             🏆 View Certificate
                           </button>
                         ) : (
-                          <button className="ib-btn ghost" onClick={()=>markRead(item)}>
+                          <button className="ib-btn ghost" onClick={()=>openDoc(item)}>
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                             {item.action === "document_comment" ? "View & Reply" : "View Document"}
                           </button>

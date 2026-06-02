@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import Topbar from "./Topbar";
 import Sidebar from "./Sidebar";
 import "../dashboard.css";
@@ -15,6 +15,7 @@ interface DashboardLayoutProps {
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [role, setRole]               = useState<Role | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [ready, setReady]             = useState(false);
@@ -174,7 +175,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         <Sidebar role={role} />
         <main className="dashboard-content">{children}</main>
       </div>
-      <SupportChat hasPremium={hasPremium} />
+      {!location.pathname.includes('/documents') && (
+        <SupportChat hasPremium={hasPremium} />
+      )}
     </div>
   );
 }

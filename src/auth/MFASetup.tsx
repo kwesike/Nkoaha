@@ -7,71 +7,70 @@ import logo from "../assets/nkoaha-logo.png";
 export default function MFASetup() {
   const navigate = useNavigate();
 
-  const [qr, setQr] = useState<string | null>(null);
+  const [qr, setQr]             = useState<string | null>(null);
   const [factorId, setFactorId] = useState<string | null>(null);
-  const [challengeId, setChallengeId] = useState<string | null>(null);
 
-  const [code, setCode] = useState("");
+  const [code, setCode]       = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError]     = useState("");
 
-  // 🔐 Enroll + create challenge
+  // 🔐 Enroll TOTP on mount — do NOT create a challenge here.
+  // Challenges expire in ~5 min. If created at mount and the user
+  // takes time scanning the QR, the challenge is stale and verify
+  // returns "invalid code" even with the right digits.
+  // A fresh challenge is created in handleVerify instead.
   useEffect(() => {
     const setupMFA = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { navigate("/login"); return; }
 
-      if (!user) {
-        navigate("/login");
-        return;
+      // Unenroll any leftover unverified factors to avoid "already exists" errors
+      const { data: existing } = await supabase.auth.mfa.listFactors();
+      for (const factor of (existing?.totp || [])) {
+        if (factor.status !== "verified") {
+          await supabase.auth.mfa.unenroll({ factorId: factor.id }).catch(() => {});
+        }
       }
 
-      // 🔹 Enroll TOTP
+      // issuer + friendlyName fix the QR showing "localhost" in authenticator apps.
+      // Also set Site URL to https://nkoaha.space in Supabase → Auth → URL Config.
       const { data: enrollData, error: enrollError } =
         await supabase.auth.mfa.enroll({
-          factorType: "totp",
+          factorType:   "totp",
+          issuer:       "NkoAha",
+          friendlyName: user.email || "NkoAha User",
         });
 
-      if (enrollError) {
-        setError(enrollError.message);
-        return;
-      }
-
-      // 🔹 Create challenge
-      const { data: challengeData, error: challengeError } =
-        await supabase.auth.mfa.challenge({
-          factorId: enrollData.id,
-        });
-
-      if (challengeError) {
-        setError(challengeError.message);
-        return;
-      }
+      if (enrollError) { setError(enrollError.message); return; }
 
       setQr(enrollData.totp.qr_code);
       setFactorId(enrollData.id);
-      setChallengeId(challengeData.id);
     };
 
     setupMFA();
   }, [navigate]);
 
-  // 🔑 Verify MFA code
+  // 🔑 Verify MFA code — creates a FRESH challenge right before verifying
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (!factorId || !challengeId) {
-      setError("MFA setup incomplete. Refresh page.");
-      return;
-    }
+    if (!factorId) { setError("MFA setup incomplete. Refresh page."); return; }
 
     setLoading(true);
     setError("");
 
+    // ── Fresh challenge every time — never expires before the user submits ──
+    const { data: challengeData, error: challengeError } =
+      await supabase.auth.mfa.challenge({ factorId });
+
+    if (challengeError) {
+      setLoading(false);
+      setError("Could not start verification. Please refresh and try again.");
+      return;
+    }
+
     const { error: verifyError } = await supabase.auth.mfa.verify({
       factorId,
-      challengeId,
+      challengeId: challengeData.id,
       code,
     });
 
@@ -82,14 +81,8 @@ export default function MFASetup() {
     }
 
     // 🔁 Redirect based on role + onboarding
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      setLoading(false);
-      return navigate("/");
-    }
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setLoading(false); return navigate("/"); }
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
@@ -98,18 +91,11 @@ export default function MFASetup() {
       .single();
 
     setLoading(false);
-
-    if (profileError || !profile) {
-      return navigate("/");
-    }
+    if (profileError || !profile) { return navigate("/"); }
 
     if (!profile.onboarding_completed) {
-      if (profile.role === "individual") {
-        return navigate("/individual");
-      }
-      if (profile.role === "organization") {
-        return navigate("/organization");
-      }
+      if (profile.role === "individual")   return navigate("/individual");
+      if (profile.role === "organization") return navigate("/organization");
     }
 
     navigate("/dashboard");
@@ -145,7 +131,8 @@ export default function MFASetup() {
           />
         </div>
 
-        <button type="submit" disabled={loading}>
+        {/* Disabled until QR has loaded AND exactly 6 digits entered */}
+        <button type="submit" disabled={loading || !qr || code.length !== 6}>
           {loading ? "Verifying..." : "Verify & Continue"}
         </button>
 

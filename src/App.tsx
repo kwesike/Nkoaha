@@ -24,6 +24,13 @@ import DocumentsPage from "./dashboard/documents/DocumentsPage";
 import NavigationLoader from "./auth/NavigationLoader";
 import JoinOrg from "./auth/JoinOrg";
 import MFASetupInvite from "./auth/MFASetupInvite";
+import AdminOverviewPage from "./admin/AdminOverviewPage";
+import AdminUsersPage from "./admin/AdminUsersPage";
+import SupportInboxPage from "./dashboard/support/SupportInboxPage";
+import AdminOrganizationsPage from "./admin/AdminOrganizationsPage";
+import AdminSubscriptionsPage from "./admin/AdminSubscriptionsPage";
+import AdminDocumentsPage from "./admin/AdminDocumentsPage";
+import AdminAuditLogsPage from "./admin/AdminAuditlogsPage";
 
 function App() {
   return (
@@ -39,11 +46,11 @@ function App() {
         <Route path="/mfa-verify" element={<MFAVerify />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
-         <Route path="/join-org" element={<JoinOrg />} />
-          <Route path="/mfa-setup" element={<MFASetupInvite />} />
+        <Route path="/join-org" element={<JoinOrg />} />
+        <Route path="/mfa-setup" element={<MFASetupInvite />} />
 
         {/* Onboarding */}
-        <Route path="/individual"  element={<ProtectedRoute><IndividualOnboarding /></ProtectedRoute>} />
+        <Route path="/individual"   element={<ProtectedRoute><IndividualOnboarding /></ProtectedRoute>} />
         <Route path="/organization" element={<ProtectedRoute><OrganizationOnboarding /></ProtectedRoute>} />
 
         {/* ── INDIVIDUAL DASHBOARD ── */}
@@ -55,7 +62,6 @@ function App() {
             <DashboardLayout><DocumentsPage /></DashboardLayout>
           </ProtectedRoute>
         } />
-       
         <Route path="/dashboard/inbox/inboxpage" element={
           <ProtectedRoute><InboxPage /></ProtectedRoute>
         } />
@@ -68,6 +74,15 @@ function App() {
         <Route path="/dashboard/settings" element={
           <ProtectedRoute><SettingsPage /></ProtectedRoute>
         } />
+
+        {/* ── ADMIN PANEL ── */}
+        <Route path="/dashboard/admin"              element={<AdminOverviewPage />} />
+        <Route path="/dashboard/admin/users"        element={<AdminUsersPage />} />
+        <Route path="/dashboard/admin/support"      element={<SupportInboxPage />} />
+        <Route path="/dashboard/admin/organizations"  element={<AdminOrganizationsPage />} />
+        <Route path="/dashboard/admin/subscriptions"  element={<AdminSubscriptionsPage />} />
+        <Route path="/dashboard/admin/documents"      element={<AdminDocumentsPage />} />
+        <Route path="/dashboard/admin/audit"          element={<AdminAuditLogsPage />} />
 
         {/* ── ORGANIZATION DASHBOARD ── */}
         <Route path="/dashboard/organizationdashboard" element={

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { subscribeToPush, unsubscribeFromPush, isPushSubscribed } from "../hooks/usePushNotifications";
-import { supabase } from "./../lib/supabase";
+import { supabase } from ".././lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 const STYLES = `
@@ -234,6 +234,9 @@ export default function SettingsPage() {
     const { error: upErr } = await supabase.storage.from("avatars").upload(path, file, { upsert:true, contentType:file.type });
     if (upErr) { showMsg("error", upErr.message, "avatar"); setUploading(null); return; }
     const url = supabase.storage.from("avatars").getPublicUrl(path).data.publicUrl;
+    // Duplicate avatar check
+    const { data: dupA } = await supabase.rpc("check_duplicate_profile", { p_email: user.email||"", p_avatar_url: url });
+    if ((dupA as any)?.duplicate_avatar) { showMsg("error","This image is already used by another account. Please upload a unique photo.","avatar"); setUploading(null); return; }
     await supabase.from("profiles").update({ avatar_url: url }).eq("id", user.id);
     setAvatarUrl(url+"?t="+Date.now());
     setUploading(null);
@@ -249,6 +252,9 @@ export default function SettingsPage() {
     const { error: upErr } = await supabase.storage.from("avatars").upload(path, file, { upsert:true, contentType:file.type });
     if (upErr) { showMsg("error", upErr.message, "sig"); setUploading(null); return; }
     const url = supabase.storage.from("avatars").getPublicUrl(path).data.publicUrl;
+    // Duplicate signature check
+    const { data: dupS } = await supabase.rpc("check_duplicate_profile", { p_email: user.email||"", p_sig_url: url });
+    if ((dupS as any)?.duplicate_signature) { showMsg("error","This signature is already registered to another account. Please use your own unique signature.","sig"); setUploading(null); return; }
     await supabase.from("profiles").update({ signature_url: url }).eq("id", user.id);
     setSigUrl(url+"?t="+Date.now());
     setUploading(null);

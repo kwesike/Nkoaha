@@ -7,6 +7,7 @@ import logo from "../assets/nkoaha-logo.png";
 
 function dashboardForRole(role?: string | null): string {
   switch (role) {
+    case "admin":               return "/dashboard/admin";
     case "organization":        return "/dashboard/organizationdashboard";
     case "organization_member":
     case "org_member":          return "/dashboard/organizationmembersdashboard";
@@ -63,10 +64,8 @@ export default function MFAVerify() {
         const { data: org } = await supabase
           .from("organizations").select("id,name").eq("owner_id", user.id).single();
         if (org) {
-          // Has an organization → must be organization role
           localStorage.setItem("nkoaha_role", "organization");
           localStorage.setItem("nkoaha_name", org.name);
-          console.log("[MFAVerify] Fallback: found org →", org.name);
           navigate("/dashboard/organizationdashboard");
           return;
         }
@@ -76,7 +75,6 @@ export default function MFAVerify() {
         if (routes?.length) {
           localStorage.setItem("nkoaha_role", "organization_member");
           localStorage.setItem("nkoaha_name", user.email?.split("@")[0] || "Member");
-          console.log("[MFAVerify] Fallback: found routes → org_member");
           navigate("/dashboard/organizationmembersdashboard");
           return;
         }
@@ -93,7 +91,7 @@ export default function MFAVerify() {
       // Cache role — DashboardLayout reads this on every page navigation
       localStorage.setItem("nkoaha_role", role);
 
-      // Cache display name — org users get org name, others get email prefix
+      // Cache display name
       if (role === "organization") {
         const { data: org } = await supabase
           .from("organizations").select("name").eq("owner_id", user.id).single();
