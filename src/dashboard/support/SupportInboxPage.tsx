@@ -128,7 +128,7 @@ export default function SupportInboxPage() {
       if (!user) { setAuthorized(false); return; }
       const { data: profile } = await supabase
         .from("profiles").select("role").eq("id", user.id).single();
-      setAuthorized(profile?.role === "organization");
+      setAuthorized(profile?.role === "admin" || profile?.role === "organization");
     });
 
     loadConversations();

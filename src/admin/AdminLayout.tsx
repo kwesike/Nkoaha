@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { supabase } from "./../lib/supabase";
+import { supabase } from ".././lib/supabase";
 import { useNavigate, useLocation, NavLink } from "react-router-dom";
 
 const STYLES = `
@@ -141,15 +141,15 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
             <NavIcon.Orgs/> Organizations
           </NavLink>
 
+          <NavLink to="/dashboard/admin/subscriptions" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
+            <NavIcon.Billing/> Subscriptions
+          </NavLink>
+
           <div className="adm-nav-section">Operations</div>
 
           <NavLink to="/dashboard/admin/support" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
             <NavIcon.Support/> Support Inbox
             {supportUnread > 0 && <span className="adm-nav-badge">{supportUnread}</span>}
-          </NavLink>
-
-          <NavLink to="/dashboard/admin/subscriptions" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
-            <NavIcon.Billing/> Subscriptions
           </NavLink>
 
           <NavLink to="/dashboard/admin/documents" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
