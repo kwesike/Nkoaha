@@ -109,6 +109,7 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
     "/dashboard/admin/subscriptions":  "Subscriptions",
     "/dashboard/admin/documents":      "Documents",
     "/dashboard/admin/audit":          "Audit Logs",
+    "/dashboard/admin/team":           "Admin Team",
   };
 
   const currentTitle = title || pageTitles[location.pathname] || "Admin";
@@ -158,6 +159,12 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
 
           <NavLink to="/dashboard/admin/audit" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
             <NavIcon.Audit/> Audit Logs
+          </NavLink>
+
+          <div className="adm-nav-section">Admin</div>
+
+          <NavLink to="/dashboard/admin/team" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
+            <NavIcon.Users/> Admin Team
           </NavLink>
         </nav>
 

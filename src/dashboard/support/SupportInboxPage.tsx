@@ -96,7 +96,6 @@ export default function SupportInboxPage() {
   const [sending, setSending]       = useState(false);
   const [sentFlash, setSentFlash]   = useState(false);
   const [search, setSearch]         = useState("");
-  // "all" is UI-only — not a Convo status value, so kept separate
   const [tabFilter, setTabFilter]   = useState<"open"|"all"|"closed">("open");
   const [loading, setLoading]       = useState(true);
   const [adminId, setAdminId]       = useState("");
@@ -145,6 +144,7 @@ export default function SupportInboxPage() {
 
   async function loadConversations() {
     setLoading(true);
+    // Load all chat sessions
     const { data: sessions } = await supabase
       .from("support_chats")
       .select("id,user_id,status,started_at,ended_at,ended_by")
@@ -152,6 +152,7 @@ export default function SupportInboxPage() {
 
     if (!sessions?.length) { setConvos([]); setLoading(false); return; }
 
+    // Load all messages for these sessions
     const sessionIds = sessions.map((s:any)=>s.id);
     const { data: logs } = await supabase
       .from("activity_logs")
@@ -160,6 +161,7 @@ export default function SupportInboxPage() {
       .in("action",["support_message","support_reply"])
       .order("created_at",{ascending:true});
 
+    // Load user profiles
     const userIds = [...new Set(sessions.map((s:any)=>s.user_id))];
     const { data: profiles } = await supabase
       .from("profiles").select("id,email,role").in("id", userIds);
@@ -171,6 +173,7 @@ export default function SupportInboxPage() {
     const subMap: Record<string,string> = {};
     for (const s of (subs||[])) subMap[s.user_id] = s.plan_id;
 
+    // Group messages by session
     const msgMap: Record<string,Msg[]> = {};
     for (const log of (logs||[])) {
       if (!msgMap[log.chat_session_id]) msgMap[log.chat_session_id] = [];
@@ -193,8 +196,6 @@ export default function SupportInboxPage() {
       const lastSupportMsg = [...msgs].reverse().find(m=>m.sender==="support");
       const unread = !!lastUserMsg && (!lastSupportMsg ||
         new Date(lastUserMsg.time) > new Date(lastSupportMsg.time));
-      // Normalise status: treat any unknown value as "open"
-      const status: "open"|"closed" = s.status === "closed" ? "closed" : "open";
       return {
         sessionId: s.id,
         userId:    s.user_id,
@@ -205,7 +206,7 @@ export default function SupportInboxPage() {
         messages:  msgs,
         lastTime:  lastMsg?.time||s.started_at,
         unread,
-        status,
+        status:    s.status,
       };
     });
 
@@ -221,6 +222,7 @@ export default function SupportInboxPage() {
     setReply("");
     setSending(true);
 
+    // Insert to activity_logs with admin name and session id
     const { data: inserted } = await supabase.from("activity_logs").insert({
       user_id:         convo.userId,
       action:          "support_reply",
@@ -236,6 +238,7 @@ export default function SupportInboxPage() {
       },
     }).select().single();
 
+    // Update local state immediately
     setConvos(prev => prev.map(c => {
       if (c.sessionId !== selected) return c;
       return {
@@ -250,6 +253,7 @@ export default function SupportInboxPage() {
       };
     }));
 
+    // Best-effort email
     try {
       const { data: { session: authSession } } = await supabase.auth.getSession();
       if (authSession?.access_token) {
@@ -292,13 +296,10 @@ export default function SupportInboxPage() {
   const unreadCount = convos.filter(c=>c.unread&&c.status==="open").length;
 
   const filtered = convos.filter(c => {
-    const matchSearch =
-      c.email.toLowerCase().includes(search.toLowerCase()) ||
-      c.name.toLowerCase().includes(search.toLowerCase());
-    // FIX: tabFilter "all" is handled explicitly; only compare c.status when
-    // tabFilter is a concrete Convo status value ("open" | "closed").
-    const matchTab = tabFilter === "all" || c.status === tabFilter;
-    return matchSearch && matchTab;
+    const q = c.email.toLowerCase().includes(search.toLowerCase())||
+              c.name.toLowerCase().includes(search.toLowerCase());
+    const t = tabFilter==="all" || c.status===tabFilter;
+    return q && t;
   });
 
   return (
@@ -409,14 +410,13 @@ export default function SupportInboxPage() {
                   value={reply}
                   onChange={e=>setReply(e.target.value)}
                   onKeyDown={e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();sendReply();}}}
-                  disabled={(selectedConvo.status as string)==="closed"}
                 />
                 <div className="si-reply-foot">
                   <span className="si-reply-hint">Replying as <strong>{adminName}</strong> · Ctrl+Enter to send</span>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     {sentFlash && <span className="si-sent">✓ Sent</span>}
                     <button className="si-send-btn" onClick={sendReply}
-                      disabled={sending||!reply.trim()||(selectedConvo.status as string)==="closed"}>
+                      disabled={sending||!reply.trim()}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                       {sending?"Sending…":"Send Reply"}
                     </button>

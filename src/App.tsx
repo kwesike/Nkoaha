@@ -36,6 +36,7 @@ const AdminSubscriptionsPage       = lazy(() => import("./admin/AdminSubscriptio
 const AdminDocumentsPage           = lazy(() => import("./admin/AdminDocumentsPage"));
 const AdminAuditLogsPage           = lazy(() => import("./admin/AdminAuditlogsPage")); // lowercase 'l' matches filename
 const SupportInboxPage             = lazy(() => import("./dashboard/support/SupportInboxPage"));
+const AdminTeamPage               = lazy(() => import("./admin/AdminTeamPage"));
 
 function PageLoader() {
   return (
@@ -105,6 +106,7 @@ function App() {
           <Route path="/dashboard/admin/subscriptions"   element={<AdminSubscriptionsPage />} />
           <Route path="/dashboard/admin/documents"       element={<AdminDocumentsPage />} />
           <Route path="/dashboard/admin/audit"           element={<AdminAuditLogsPage />} />
+          <Route path="/dashboard/admin/team"            element={<AdminTeamPage />} />
 
           {/* ── ORGANIZATION ── */}
           <Route path="/dashboard/organizationdashboard" element={
