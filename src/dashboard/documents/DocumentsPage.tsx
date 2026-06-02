@@ -205,9 +205,15 @@ async function loadPdfJs(): Promise<any> {
   });
 }
 
+/* ── FIX 1: Resolve any storage path to a working signed URL ──
+   Tries multiple bucket/path combos so it works regardless of
+   how the signature was stored (full URL, path, with/without prefix).
+*/
 async function resolveStorageUrl(pathOrUrl: string): Promise<string> {
   if (!pathOrUrl) return "";
+  // Already a full URL — return as-is
   if (pathOrUrl.startsWith("http")) return pathOrUrl;
+  // Try all known bucket+path combinations
   const attempts = [
     ["avatars",    pathOrUrl],
     ["avatars",    `avatars/${pathOrUrl}`],
@@ -224,6 +230,7 @@ async function resolveStorageUrl(pathOrUrl: string): Promise<string> {
 
 async function renderPdfPage(pdfDoc: any, pageNum: number, canvas: HTMLCanvasElement) {
   const page = await pdfDoc.getPage(pageNum);
+  // Use at least 2x for crisp rendering — clamp to 3x max to avoid memory issues
   const dpr   = Math.min(window.devicePixelRatio || 2, 3);
   const pageW = 816;
   const baseVp = page.getViewport({ scale: 1 });
@@ -233,6 +240,7 @@ async function renderPdfPage(pdfDoc: any, pageNum: number, canvas: HTMLCanvasEle
   canvas.height = Math.floor(vp.height);
   canvas.style.width  = pageW + "px";
   canvas.style.height = Math.floor(vp.height / dpr) + "px";
+  // Force crisp rendering
   const ctx = canvas.getContext("2d")!;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
@@ -460,7 +468,7 @@ export default function DocumentsPage() {
   const [contextPos, setContextPos]   = useState<{x:number;y:number}|null>(null);
   const [showRouteModal, setShowRouteModal] = useState(false);
   const [users, setUsers]             = useState<any[]>([]);
-  const [selectedRoute, setSelectedRoute] = useState<string[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<string[]>([]); // ordered list of user IDs
   const [currentOrgId, setCurrentOrgId]     = useState<string|null>(null);
   const [docxHtmlPages, setDocxHtmlPages] = useState<string[]>([]);
   const [docxOverlays, setDocxOverlays]   = useState<PdfOverlay[]>([]);
@@ -475,8 +483,10 @@ export default function DocumentsPage() {
   const [dragOverlay, setDragOverlay] = useState<string|null>(null);
   const [dragStart, setDragStart]     = useState<{x:number;y:number}>({x:0,y:0});
   const [focusId, setFocusId]         = useState<string|null>(null);
+  // Route action state — set when current user is a recipient of the active doc
   const [myRoute, setMyRoute] = useState<{id:string;is_final:boolean;status:string;route_order:number;total_steps:number}|null>(null);
   const [routeActioning, setRouteActioning] = useState(false);
+  // Comments dialog state
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments]         = useState<any[]>([]);
   const [commentText, setCommentText]   = useState("");
@@ -484,11 +494,13 @@ export default function DocumentsPage() {
   const [currentUserId, setCurrentUserId]   = useState("");
   const [isInitiator, setIsInitiator]       = useState(false);
 
+  // Returns true if this overlay was placed by a previous recipient and must not be touched
   const isLocked=(ov:PdfOverlay):boolean=>{
-    if(!myRoute) return false;
-    if(ov.step===undefined||ov.step===null) return false;
-    return ov.step < myRoute.route_order;
+    if(!myRoute) return false; // owner — nothing locked
+    if(ov.step===undefined||ov.step===null) return false; // legacy overlay — allow
+    return ov.step < myRoute.route_order; // placed by someone earlier in the chain
   };
+  // Auth confirmation modal for approve actions
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authAction, setAuthAction] = useState<"approve"|"save"|null>(null);
   const [authPassword, setAuthPassword] = useState("");
@@ -500,8 +512,8 @@ export default function DocumentsPage() {
   const location          = useLocation();
   const fileInputRef      = useRef<HTMLInputElement|null>(null);
   const imageInputRef     = useRef<HTMLInputElement|null>(null);
-  const imageInputTarget  = useRef<"pdf"|"docx"|"new">("pdf");
-  const imagePickerOpen   = useRef<boolean>(false);
+  const imageInputTarget  = useRef<"pdf"|"docx"|"new">("pdf"); // which doc type triggered upload
+  const imagePickerOpen   = useRef<boolean>(false); // blocks PDF stage click while picker is open
   const canvasAreaRef = useRef<HTMLDivElement|null>(null);
   const pdfCanvasRefs = useRef<(HTMLCanvasElement|null)[]>([]);
   const insertDateRef = useRef<((d:string)=>void)|null>(null);
@@ -533,6 +545,7 @@ export default function DocumentsPage() {
   useEffect(()=>{
     (async()=>{
       const {data:{user}}=await supabase.auth.getUser(); if(!user)return;
+      // Also load documents shared/routed to this user via document_routes
       const [ownedRes, routedRes] = await Promise.all([
         supabase.from("documents")
           .select("id,title,file_url,document_kind,pages,status,format,pdf_url,pdf_ready")
@@ -546,6 +559,7 @@ export default function DocumentsPage() {
         format:d.format||(d.document_kind==="upload"?"pdf":"new"),pages:d.pages||1,
         pdfUrl:d.pdf_url||"",pdfReady:d.pdf_ready||false,
       }));
+      // Fetch routed documents separately to avoid join RLS issues
       const routedDocIds = (routedRes.data||[]).map((r:any)=>r.document_id).filter(Boolean);
       const ownedIds = owned.map((d:any)=>d.id);
       const newIds = routedDocIds.filter((id:string)=>!ownedIds.includes(id));
@@ -564,6 +578,7 @@ export default function DocumentsPage() {
       const allDocs=[...owned,...routedDocs];
       setDocuments(allDocs);
 
+      // Auto-open document if navigated here with openDocId in state
       const openDocId=(location.state as any)?.openDocId;
       if(openDocId){
         const target=allDocs.find((d:any)=>d.id===openDocId);
@@ -574,6 +589,7 @@ export default function DocumentsPage() {
 
   useEffect(()=>{
     if(!pdfDoc||activeDoc?.format!=="pdf")return;
+    // Render first 2 pages immediately, rest lazily as user scrolls
     const go=async()=>{
       const first=Math.min(2,pdfDoc.numPages);
       for(let i=0;i<first;i++){const c=pdfCanvasRefs.current[i];if(c)await renderPdfPage(pdfDoc,i+1,c);}
@@ -643,6 +659,7 @@ export default function DocumentsPage() {
     setFooter(data?.footer||"");
     setCurrentPage(1);setSaveStatus("saved");
 
+    // ── Fetch myRoute FIRST so we can use route_order to stamp/lock overlays ──
     const{data:{user:currentUser}}=await supabase.auth.getUser();
     let myRouteData:any=null;
     if(currentUser){
@@ -654,6 +671,8 @@ export default function DocumentsPage() {
       myRouteData=rd||null;
       console.log("[DocumentsPage] myRouteData for doc", doc.id, ":", myRouteData);
     }
+    // Completed route steps — overlays from these steps must be locked
+    // Any overlay without a step gets stamped as step 0 (owner)
     const stampOverlays=(ovs:PdfOverlay[]):PdfOverlay[]=>{
       return ovs.map(o=>({...o, step: o.step !== undefined ? o.step : 0}));
     };
@@ -713,20 +732,26 @@ export default function DocumentsPage() {
     }else{
       const raw=data?.content?(typeof data.content==="string"?JSON.parse(data.content):data.content):EMPTY_DOC;
       const pages=splitJsonIntoPages(raw);setEditorPages(pages);setTotalPages(pages.length);
+      // Restore image overlays
       const saved=data?.annotations;
       if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.newDocOverlays)setNewDocOverlays(stampOverlays(p.newDocOverlays));}
     }
     setLoading(false);
+    // Set myRoute last — after all overlays loaded, so topbar renders correctly
     setMyRoute(myRouteData);
+    // Track who the current user is relative to this doc
     if(currentUser){
       setCurrentUserId(currentUser.id);
+      // Initiator = owner of the document
       const isOwner = data?.owner_id === currentUser.id ||
         (await supabase.from("documents").select("owner_id").eq("id",doc.id).single()).data?.owner_id === currentUser.id;
       setIsInitiator(!!isOwner || !myRouteData);
     }
+    // Load comments
     loadComments(doc.id);
   };
 
+  /* ── Comments ── */
   const loadComments=async(docId:string)=>{
     const{data}=await supabase.from("document_comments")
       .select("*").eq("document_id",docId).order("created_at",{ascending:true});
@@ -738,6 +763,7 @@ export default function DocumentsPage() {
     setCommentSending(true);
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     const{data:prof}=await supabase.from("profiles").select("email").eq("id",user.id).single();
+    // Insert comment
     await supabase.from("document_comments").insert({
       document_id: activeDoc.id,
       sender_id:   user.id,
@@ -745,7 +771,10 @@ export default function DocumentsPage() {
       message:     commentText.trim(),
       is_initiator: isInitiator,
     });
+    // Notify the other party in their inbox
+    // If recipient commenting → notify initiator; if initiator → notify current active recipient
     if(!isInitiator){
+      // Get document owner
       const{data:doc}=await supabase.from("documents").select("owner_id,title").eq("id",activeDoc.id).single();
       if(doc?.owner_id){
         await supabase.from("activity_logs").insert({
@@ -761,6 +790,7 @@ export default function DocumentsPage() {
         });
       }
     } else {
+      // Initiator replying — notify current pending recipient
       const{data:pendingRoute}=await supabase.from("document_routes")
         .select("recipient_id").eq("document_id",activeDoc.id).eq("status","pending").maybeSingle();
       if(pendingRoute?.recipient_id){
@@ -782,6 +812,7 @@ export default function DocumentsPage() {
     loadComments(activeDoc.id);
   };
 
+  /* ── Generate Proof certificate ── */
   const generateProof=async(
     docId:string, recipientId:string, recipientEmail:string,
     actionType:string, routeOrder:number, totalSteps:number,
@@ -793,6 +824,8 @@ export default function DocumentsPage() {
     const docRef=`DOC-${docId.slice(0,8).toUpperCase()}`;
     const actionLabel=actionType==="signed"?"Approved & Signed":actionType==="approved"?"Approved & Forwarded":"Declined";
 
+    // ── Enrich certificate with relationship context ──
+    // Determine: individual↔individual, org members (same org), or partnership (different orgs)
     const { data: recipientProfile } = await supabase
       .from("profiles").select("id,email,avatar_url,role,organization_id").eq("id",recipientId).single();
     const { data: docRow2 } = await supabase
@@ -801,6 +834,7 @@ export default function DocumentsPage() {
     const { data: ownerProfile } = await supabase
       .from("profiles").select("id,email,avatar_url,role,organization_id").eq("id",ownerId).single();
 
+    // Fetch all route recipients for full chain context
     const { data: allRoutes } = await supabase
       .from("document_routes")
       .select("recipient_id,route_order,status")
@@ -808,16 +842,20 @@ export default function DocumentsPage() {
       .order("route_order",{ascending:true});
     const chainIds = (allRoutes||[]).map((r:any)=>r.recipient_id);
 
+    // Fetch profiles for all chain members
     const { data: chainProfiles } = chainIds.length > 0
       ? await supabase.from("profiles").select("id,email,avatar_url,organization_id,role").in("id",chainIds)
       : { data: [] };
     const profileMap: Record<string,any> = {};
     for (const p of (chainProfiles||[])) profileMap[p.id] = p;
+    // Include owner
     if (ownerProfile) profileMap[ownerId] = ownerProfile;
 
+    // Determine relationship type
     const recipientOrgId = recipientProfile?.organization_id || null;
     const ownerOrgId     = ownerProfile?.organization_id || null;
 
+    // Fetch orgs involved
     let recipientOrg:any = null, ownerOrg:any = null;
     if (recipientOrgId) {
       const { data: ro } = await supabase.from("organizations").select("id,name,logo").eq("id",recipientOrgId).single();
@@ -827,10 +865,12 @@ export default function DocumentsPage() {
       const { data: oo } = await supabase.from("organizations").select("id,name,logo").eq("id",ownerOrgId).single();
       ownerOrg = oo;
     } else if (ownerOrgId && ownerOrgId === recipientOrgId) {
+      // same org
       const { data: oo } = await supabase.from("organizations").select("id,name,logo").eq("id",ownerOrgId).single();
       ownerOrg = oo; recipientOrg = oo;
     }
 
+    // Also fetch org for any chain members from different orgs (partnership)
     const partnerOrgIds = new Set<string>();
     for (const p of Object.values(profileMap) as any[]) {
       if (p.organization_id) partnerOrgIds.add(p.organization_id);
@@ -841,6 +881,7 @@ export default function DocumentsPage() {
     const orgMap: Record<string,any> = {};
     for (const o of (allOrgs||[])) orgMap[o.id] = o;
 
+    // Classify relationship
     const uniqueOrgIds = new Set(
       Object.values(profileMap).map((p:any)=>p.organization_id).filter(Boolean)
     );
@@ -848,6 +889,7 @@ export default function DocumentsPage() {
     if (uniqueOrgIds.size >= 2) relationshipType = "partnership";
     else if (uniqueOrgIds.size === 1) relationshipType = "org_internal";
 
+    // Resolve avatar URLs for individuals
     const resolveAvatar = async (url:string|null): Promise<string> => {
       if (!url) return "";
       if (url.startsWith("http")) return url;
@@ -857,6 +899,7 @@ export default function DocumentsPage() {
     const recipientAvatarUrl = await resolveAvatar(recipientProfile?.avatar_url || null);
     const ownerAvatarUrl     = await resolveAvatar(ownerProfile?.avatar_url || null);
 
+    // Build relationship banner HTML
     const avatarCircle = (name:string, email:string, avatarUrl:string, _role:string, orgName?:string) => `
       <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:120px;max-width:160px">
         ${avatarUrl
@@ -893,10 +936,12 @@ export default function DocumentsPage() {
         </div>`
       : "";
 
+    // Build the context-specific relationship section
     let relationshipBanner = "";
     let declarationText    = "";
 
     if (relationshipType === "partnership") {
+      // Find the orgs of owner and recipient
       const ownerOrgData     = ownerOrgId     ? orgMap[ownerOrgId]     : null;
       const recipientOrgData = recipientOrgId ? orgMap[recipientOrgId] : null;
       declarationText = `This document was processed as part of an inter-organisational partnership workflow between
@@ -963,6 +1008,7 @@ export default function DocumentsPage() {
           </div>
         </div>`;
     } else {
+      // Individual ↔ Individual
       declarationText = `This document was processed as an individual-to-individual workflow on NkoAha.
         ${ownerProfile?.email?.split("@")[0] || "The initiator"} created and routed this document,
         and ${recipientEmail.split("@")[0]} ${actionLabel.toLowerCase()} it — both acting as
@@ -990,6 +1036,7 @@ export default function DocumentsPage() {
         </div>`;
     }
 
+    // Build approval chain summary
     const chainHtml = (allRoutes||[]).map((r:any,i:number) => {
       const p  = profileMap[r.recipient_id];
       const em = p?.email || "Unknown";
@@ -1008,6 +1055,7 @@ export default function DocumentsPage() {
       </div>`;
     }).join("");
 
+    // Relationship type badge
     const relBadgeColor = relationshipType==="partnership"?"#2563eb":relationshipType==="org_internal"?"#7c3aed":"#0d9488";
     const relBadgeLabel = relationshipType==="partnership"?"🤝 Inter-Org Partnership":relationshipType==="org_internal"?"🏢 Intra-Org Workflow":"👤 Individual-to-Individual";
 
@@ -1066,6 +1114,8 @@ export default function DocumentsPage() {
 <div class="cert">
   <div class="cert-top-bar"></div>
   <div class="cert-watermark">NKOAHA</div>
+
+  <!-- Header -->
   <div class="cert-header">
     <div class="cert-brand">
       <div style="width:44px;height:44px;flex-shrink:0">
@@ -1087,11 +1137,17 @@ export default function DocumentsPage() {
       <div style="margin-top:6px;display:inline-block;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;background:${relBadgeColor}1a;color:${relBadgeColor}">${relBadgeLabel}</div>
     </div>
   </div>
+
+  <!-- Relationship context banner -->
   ${relationshipBanner}
+
+  <!-- Declaration -->
   <div class="cert-declaration">
     <div class="cert-decl-heading">Certificate of Document Participation</div>
     <div class="cert-decl-text">${declarationText}</div>
   </div>
+
+  <!-- Fields -->
   <div class="cert-fields">
     <div class="cert-field">
       <div class="cert-field-label">Signatory Name</div>
@@ -1138,10 +1194,14 @@ export default function DocumentsPage() {
       <div class="cert-field-value">${now.toLocaleString("en-US",{year:"numeric",month:"long",day:"numeric"})}</div>
     </div>
   </div>
+
+  <!-- Approval chain -->
   <div class="cert-chain">
     <div class="cert-chain-title">Full Approval Chain (${totalSteps} step${totalSteps!==1?"s":""})</div>
     ${chainHtml}
   </div>
+
+  <!-- Signature section -->
   <div class="cert-sig-section">
     <div class="cert-sig-box">
       <div class="cert-sig-label">Signature of Signatory</div>
@@ -1163,6 +1223,8 @@ export default function DocumentsPage() {
       <div class="cert-stamp-text">Verified<br/>NkoAha</div>
     </div>
   </div>
+
+  <!-- Footer -->
   <div class="cert-footer">
     <div class="cert-footer-note">
       Cert: ${certId} &nbsp;|&nbsp; Doc: ${docRef} &nbsp;|&nbsp; ${now.toISOString()} &nbsp;|&nbsp; nkoaha.space
@@ -1172,6 +1234,7 @@ export default function DocumentsPage() {
 </div>
 </body></html>`;
 
+    // Save proof to DB
     const{error:proofErr}=await supabase.from("document_proofs").insert({
       document_id:     docId,
       recipient_id:    recipientId,
@@ -1225,20 +1288,24 @@ export default function DocumentsPage() {
   };
 
   const checkDocLimit=async(userId:string):Promise<boolean>=>{
+    // Returns true if user can create more documents
     const{data:sub}=await supabase.from("subscriptions")
       .select("org_doc_limit,doc_quota,plan_type,period,activated_at,created_at,expires_at")
       .eq("user_id",userId).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
 
-    if(!sub) return true;
+    if(!sub) return true; // no subscription = free tier, handled separately
 
+    // ── Auto-expire if past expiry date ──
     if(sub.expires_at && new Date(sub.expires_at) < new Date()){
       await supabase.from("subscriptions")
         .update({status:"expired",updated_at:new Date().toISOString()})
         .eq("user_id",userId).eq("status","active");
-      return true;
+      return true; // drop to free tier limits
     }
 
+    // ── Org doc limit: resets monthly regardless of plan period ──
+    // Starter=100/month, Growth=500/month, Enterprise=unlimited
     if(sub.org_doc_limit!==null&&sub.org_doc_limit!==undefined&&sub.plan_type==="organization"){
       const now=new Date();
       const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
@@ -1253,6 +1320,7 @@ export default function DocumentsPage() {
       }
     }
 
+    // Individual doc quota (daily/weekly/monthly/yearly)
     if(sub.doc_quota!==null&&sub.doc_quota!==undefined&&sub.plan_type==="individual"){
       const now=new Date();
       let since=new Date();
@@ -1275,6 +1343,7 @@ export default function DocumentsPage() {
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     if(!(await checkDocLimit(user.id)))return;
 
+    // ── Enforce org doc limit from subscription ──
     const{data:sub}=await supabase.from("subscriptions")
       .select("org_doc_limit,doc_quota,plan_type,expires_at")
       .eq("user_id",user.id).eq("status","active")
@@ -1310,6 +1379,7 @@ export default function DocumentsPage() {
     if(!file.name.match(/\.(docx|pdf)$/i)){alert("Only .docx and .pdf files are supported.");return;}
     if(!(await checkDocLimit(user.id)))return;
 
+    // ── Enforce org doc limit ──
     const{data:sub}=await supabase.from("subscriptions")
       .select("org_doc_limit")
       .eq("user_id",user.id).eq("status","active")
@@ -1353,6 +1423,7 @@ export default function DocumentsPage() {
     const nd:DocumentItem={id:data.id,title:data.title,fileUrl:fileUrl,format,pages};
     setDocuments(prev=>[nd,...prev]);
     await logActivity("document_uploaded",data.id,data.title,user.id);
+    // Kick off PDF conversion in background for DOCX
     if(format==="docx"&&fileUrl){
       convertDocxToPdfViaCloudConvert(fileUrl,data.id,async(pdfBlob:Blob)=>{
         const pdfPath=`docs/converted_${data.id}.pdf`;
@@ -1400,7 +1471,7 @@ export default function DocumentsPage() {
   const openRoutingModal=async()=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     const{data:myProfile}=await supabase.from("profiles").select("role,organization_id").eq("id",user.id).single();
-    const role=myProfile?.role;
+    const role=myProfile?.role; // used in buildQuery below
     const orgId=myProfile?.organization_id||null;
     setCurrentOrgId(orgId);
 
@@ -1408,7 +1479,10 @@ export default function DocumentsPage() {
 
     console.log("[Route] user role:", role, "orgId:", orgId);
 
+    // Strategy: try multiple approaches until we get users
+    // Approach 1: build user list based on role + partnerships
     const buildQuery=async()=>{
+      // Helper: get partner org member IDs for a given org
       const getPartnerMembers=async(myOrgId:string)=>{
         const{data:partnerships,error:pe}=await supabase.from("organization_partnerships")
           .select("requester_id,partner_id")
@@ -1425,6 +1499,7 @@ export default function DocumentsPage() {
       };
 
       if(role==="organization_member"&&orgId){
+        // Org member → own org members + partner org members
         const{data:ownMembers}=await supabase.from("profiles")
           .select("id,email,role,organization_id").eq("organization_id",orgId).neq("id",user.id);
         const partnerMembers=await getPartnerMembers(orgId);
@@ -1432,6 +1507,7 @@ export default function DocumentsPage() {
       }
 
       if(role==="organization"){
+        // Org admin → own org members + partner org members
         const{data:myOrg}=await supabase.from("organizations")
           .select("id").eq("owner_id",user.id).maybeSingle();
         if(myOrg?.id){
@@ -1442,6 +1518,7 @@ export default function DocumentsPage() {
         }
       }
 
+      // Individuals → everyone
       const{data}=await supabase.from("profiles").select("id,email,role,organization_id").neq("id",user.id);
       return data||[];
     };
@@ -1453,10 +1530,12 @@ export default function DocumentsPage() {
       allUsers=directData;
     }
 
+    // Approach 2: if empty, try org members + partners directly
     if(allUsers.length===0&&orgId){
       console.log("[Route] trying org members + partners directly...");
       const{data:orgData}=await supabase.from("profiles")
         .select("id,email,role,organization_id").eq("organization_id",orgId).neq("id",user.id);
+      // Also try to get partner org members
       const{data:partnerData}=await supabase.from("organization_partnerships")
         .select("requester_id,partner_id").or(`requester_id.eq.${orgId},partner_id.eq.${orgId}`).eq("status","accepted");
       const partnerOrgIds=(partnerData||[]).map((p:any)=>p.requester_id===orgId?p.partner_id:p.requester_id);
@@ -1470,6 +1549,7 @@ export default function DocumentsPage() {
       if(combined.length>0) allUsers=combined;
     }
 
+    // Approach 3: read from organizations table to get org owner as fallback
     if(allUsers.length===0){
       console.log("[Route] trying organizations fallback...");
       const{data:orgs}=await supabase.from("organizations").select("owner_id,name");
@@ -1483,6 +1563,7 @@ export default function DocumentsPage() {
       }
     }
 
+    // Approach 4: last resort — read from document_routes to find known users
     if(allUsers.length===0){
       console.log("[Route] trying document_routes fallback...");
       const{data:routes}=await supabase.from("document_routes")
@@ -1500,12 +1581,12 @@ export default function DocumentsPage() {
     setSelectedRoute([]);
     setShowRouteModal(true);
   };
-
   const saveRoute=async()=>{
     if(!activeDoc||selectedRoute.length===0)return;
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     const totalSteps=selectedRoute.length;
 
+    // Insert ALL route steps — but only activate step 1 initially
     for(let i=0;i<totalSteps;i++){
       await supabase.from("document_routes").insert({
         document_id:activeDoc.id,
@@ -1513,10 +1594,12 @@ export default function DocumentsPage() {
         route_order:i+1,
         total_steps:totalSteps,
         is_final:i===totalSteps-1,
-        status:i===0?"pending":"waiting",
+        status:i===0?"pending":"waiting", // only first step is pending
       });
     }
 
+    // ── Only notify the FIRST recipient ──
+    // Everyone else is notified when the person before them clicks Approve
     await supabase.from("activity_logs").insert({
       user_id:selectedRoute[0],
       action:"document_received",
@@ -1537,6 +1620,8 @@ export default function DocumentsPage() {
     alert(`Document routed to ${totalSteps} recipient${totalSteps>1?"s":""} successfully.`);
   };
 
+  /* ── Route action handlers (for recipients) ── */
+  /* ── Auth verify then execute approve ── */
   const requestApprove=(action:"approve"|"save")=>{
     setAuthAction(action);
     setAuthPassword("");
@@ -1551,6 +1636,7 @@ export default function DocumentsPage() {
     }
     setAuthLoading(true); setAuthError("");
     try{
+      // Verify identity using MFA (same flow as MFAVerify.tsx)
       const{data:factors,error:fe}=await supabase.auth.mfa.listFactors();
       if(fe||!factors?.totp?.length){
         setAuthError("No authenticator app set up. Please set up MFA in your account.");
@@ -1571,6 +1657,7 @@ export default function DocumentsPage() {
     setAuthLoading(false);
     setShowAuthModal(false);
     setAuthPassword("");
+    // Execute the approved action
     if(authAction==="approve") handleApprove();
     else if(authAction==="save") handleSaveDoc();
   };
@@ -1580,6 +1667,8 @@ export default function DocumentsPage() {
     setRouteActioning(true);
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
 
+    // ── Save all current overlays/changes before approving ──
+    // This persists this user's additions so the next recipient sees them
     if(activeDoc.format==="pdf"){
       await supabase.from("documents").update({
         annotations:JSON.stringify({pdfOverlays}),
@@ -1596,9 +1685,12 @@ export default function DocumentsPage() {
       }).eq("id",activeDoc.id);
     }
 
+    // Mark this route step complete
     await supabase.from("document_routes").update({status:"completed",actioned_at:new Date().toISOString()}).eq("id",myRoute.id);
+    // Update activity_log
     const{data:logRow}=await supabase.from("activity_logs").select("id,metadata").eq("user_id",user.id).eq("document_id",activeDoc.id).eq("action","document_received").maybeSingle();
     if(logRow){await supabase.from("activity_logs").update({metadata:{...logRow.metadata,status:"actioned",actioned_at:new Date().toISOString(),action_type:"forward"}}).eq("id",logRow.id);}
+    // Activate next step + notify next recipient
     const nextOrder = myRoute.route_order + 1;
     const{data:nextRoute}=await supabase.from("document_routes")
       .select("recipient_id,is_final,total_steps,route_order")
@@ -1607,13 +1699,16 @@ export default function DocumentsPage() {
       .maybeSingle();
     if(nextRoute){
       await supabase.from("document_routes").update({status:"pending"}).eq("document_id",activeDoc.id).eq("route_order",nextOrder).in("status",["waiting","pending"]);
+      // Update next recipient's inbox activity_log to pending so they get notified
       const{data:nextLog}=await supabase.from("activity_logs")
         .select("id,metadata").eq("user_id",nextRoute.recipient_id).eq("document_id",activeDoc.id).eq("action","document_received").maybeSingle();
       if(nextLog){
+        // Already has a log row — mark it pending so it shows in their inbox
         await supabase.from("activity_logs").update({
           metadata:{...nextLog.metadata,status:"pending",step_order:nextOrder,forwarded_by:user.id,forwarded_at:new Date().toISOString()},
         }).eq("id",nextLog.id);
       } else {
+        // No log row yet — insert one
         await supabase.from("activity_logs").insert({
           user_id:nextRoute.recipient_id,
           action:"document_received",
@@ -1629,6 +1724,7 @@ export default function DocumentsPage() {
         });
       }
     }
+    // Generate proof certificate for this recipient
     const{data:{user:u2}}=await supabase.auth.getUser();
     if(u2){
       const{data:prof2}=await supabase.from("profiles").select("email,signature_url").eq("id",u2.id).single();
@@ -1636,6 +1732,7 @@ export default function DocumentsPage() {
       await generateProof(activeDoc.id,u2.id,prof2?.email||u2.email||"","approved",
         myRoute.route_order,myRoute.total_steps,sigUrl2,docTitle);
     }
+    // Notify initiator of approval
     const{data:docForNotif}=await supabase.from("documents").select("owner_id").eq("id",activeDoc.id).single();
     const{data:{user:u3}}=await supabase.auth.getUser();
     if(docForNotif?.owner_id&&u3&&docForNotif.owner_id!==u3.id){
@@ -1646,6 +1743,7 @@ export default function DocumentsPage() {
     }
     setMyRoute({...myRoute,status:"completed"});
     setRouteActioning(false);
+    // Remove routed doc from this recipient's sidebar (they've passed it on)
     setDocuments(prev=>prev.filter(d=>d.id!==activeDoc.id));
     setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
     alert("Document approved and forwarded to next recipient.");
@@ -1656,6 +1754,7 @@ export default function DocumentsPage() {
     setRouteActioning(true);
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
 
+    // Save all overlays/changes before marking as signed
     if(activeDoc.format==="pdf"){
       await supabase.from("documents").update({
         annotations:JSON.stringify({pdfOverlays}),status:"signed",
@@ -1674,6 +1773,7 @@ export default function DocumentsPage() {
     await supabase.from("document_routes").update({status:"completed",actioned_at:new Date().toISOString()}).eq("id",myRoute.id);
     const{data:logRow}=await supabase.from("activity_logs").select("id,metadata").eq("user_id",user.id).eq("document_id",activeDoc.id).eq("action","document_received").maybeSingle();
     if(logRow){await supabase.from("activity_logs").update({metadata:{...logRow.metadata,status:"actioned",actioned_at:new Date().toISOString(),action_type:"save"}}).eq("id",logRow.id);}
+    // Generate proof certificate for final recipient
     const{data:{user:u4}}=await supabase.auth.getUser();
     if(u4){
       const{data:prof4}=await supabase.from("profiles").select("email,signature_url").eq("id",u4.id).single();
@@ -1681,6 +1781,7 @@ export default function DocumentsPage() {
       await generateProof(activeDoc.id,u4.id,prof4?.email||u4.email||"","signed",
         myRoute.route_order,myRoute.total_steps,sigUrl4,docTitle);
     }
+    // Notify initiator of final sign
     const{data:docForNotif2}=await supabase.from("documents").select("owner_id").eq("id",activeDoc.id).single();
     const{data:{user:u5}}=await supabase.auth.getUser();
     if(docForNotif2?.owner_id&&u5&&docForNotif2.owner_id!==u5.id){
@@ -1694,135 +1795,78 @@ export default function DocumentsPage() {
     alert("Document approved and signed. Your Proof certificate has been issued to your inbox.\n\nYou can now Download or Print the document — it will be removed from your list after you do.");
   };
 
-  // ── FIXED bakePages: measures actual rendered DOM geometry so output matches screen exactly ──
+  /* ── Bake page canvases + overlays into JPEG data URLs ── */
   const bakePages=async():Promise<string[]>=>{
     if(!activeDoc)return[];
 
     if(activeDoc.format==="new"){
       const pm=canvasAreaRef.current?.querySelector(".ProseMirror");
-      return["__new__:"+(pm?.innerHTML??"")];
+      if(!pm)return["__new__:"+pm?.innerHTML];
+      return["__new__:"+pm.innerHTML];
     }
 
     const isDocx = activeDoc.format==="docx";
     const refs   = isDocx ? docxPdfCanvasRefs : pdfCanvasRefs;
     const ovs    = isDocx ? docxOverlays      : pdfOverlays;
-    const pdoc   = isDocx ? docxPdfDoc        : pdfDoc;
-    const total  = pdoc?.numPages || 0;
+    const total  = isDocx ? (docxPdfDoc?.numPages||0) : (pdfDoc?.numPages||0);
     if(total===0)return[];
-
-    // Force-render any page that was lazily skipped so nothing is omitted
-    for(let i=0;i<total;i++){
-      const c=refs.current[i];
-      if(c && c.width===0){ try{ await renderPdfPage(pdoc,i+1,c); }catch{} }
-    }
-    // Let the browser commit layout so getBoundingClientRect is accurate
-    await new Promise(r=>requestAnimationFrame(()=>r(null)));
-
-    const loadImg=(src:string)=>new Promise<HTMLImageElement|null>(res=>{
-      const img=new Image(); img.crossOrigin="anonymous";
-      img.onload=()=>res(img); img.onerror=()=>res(null); img.src=src;
-    });
 
     const images:string[]=[];
     for(let i=0;i<total;i++){
       const base=refs.current[i];
       if(!base||base.width===0)continue;
 
-      // The stage is the canvas's direct parent (dp-pdf-stage)
-      const stage=base.parentElement as HTMLElement|null;
-      const canvasRect=base.getBoundingClientRect();
-      // How many baked canvas pixels equal one on-screen CSS pixel
-      const px=base.width/canvasRect.width;
+      // ── Use canvas CSS dimensions directly — these are set by renderPdfPage
+      // and are stable regardless of scroll position or visibility.
+      // dispW/H = the CSS display size; base.width/H = the actual pixel backing store.
+      const dispW = parseFloat(base.style.width)  || 816;
+      const dispH = parseFloat(base.style.height) || Math.round(base.height * (dispW / base.width));
+      const scaleX = base.width  / dispW;
+      const scaleY = base.height / dispH;
 
       const merged=document.createElement("canvas");
-      merged.width=base.width; merged.height=base.height;
+      merged.width =base.width;
+      merged.height=base.height;
       const ctx=merged.getContext("2d")!;
       ctx.drawImage(base,0,0);
 
-      // Snapshot all overlay measurements synchronously before any awaits,
-      // so a scroll mid-loop can't shift subsequent getBoundingClientRect reads.
-      type SnapItem = {
-        ov: PdfOverlay;
-        r: DOMRect;
-        cs: CSSStyleDeclaration;
-        ow: number; // offsetWidth  = untransformed border-box width
-        oh: number; // offsetHeight = untransformed border-box height
-      };
-      const snapItems: SnapItem[] = ovs
-        .filter(o=>o.pageIdx===i)
-        .map(ov=>{
-          const el=stage?.querySelector(`[data-ovid="${ov.id}"]`) as HTMLElement|null;
-          if(!el) return null;
-          return {
-            ov,
-            r:  el.getBoundingClientRect(), // axis-aligned bbox; center is always correct
-            cs: window.getComputedStyle(el),
-            ow: el.offsetWidth,             // layout width, unaffected by CSS transform
-            oh: el.offsetHeight,
-          };
-        })
-        .filter(Boolean) as SnapItem[];
+      for(const ov of ovs.filter(o=>o.pageIdx===i)){
+        // Convert % of display size → CSS pixels → canvas pixels
+        const x  = (ov.x/100) * dispW  * scaleX;
+        const y  = (ov.y/100) * dispH  * scaleY;
+        const fs = (ov.fontSize||16) * scaleX; // font/image size scaled same as X axis
 
-      for(const {ov,r,cs,ow,oh} of snapItems){
-        // Element center relative to the canvas top-left (CSS px), stable even when rotated
-        const cxCss=(r.left-canvasRect.left)+r.width /2;
-        const cyCss=(r.top -canvasRect.top )+r.height/2;
-
-        // Content box dimensions and offset from element center (unrotated frame, CSS px)
-        const padL =parseFloat(cs.paddingLeft)      ||0;
-        const padR =parseFloat(cs.paddingRight)     ||0;
-        const padT =parseFloat(cs.paddingTop)       ||0;
-        const padB =parseFloat(cs.paddingBottom)    ||0;
-        const bL   =parseFloat(cs.borderLeftWidth)  ||0;
-        const bR   =parseFloat(cs.borderRightWidth) ||0;
-        const bT   =parseFloat(cs.borderTopWidth)   ||0;
-        const bB   =parseFloat(cs.borderBottomWidth)||0;
-        const contentW=ow-padL-padR-bL-bR;
-        const contentH=oh-padT-padB-bT-bB;
-        // Offset of content-box top-left from element center (unrotated)
-        const offLeft=-ow/2+bL+padL;
-        const offTop =-oh/2+bT+padT;
-
-        ctx.save();
-        // Move origin to element center in baked-pixel space, then apply rotation
-        ctx.translate(cxCss*px, cyCss*px);
-        const rot=((ov.rotation||0)*Math.PI)/180;
-        if(rot) ctx.rotate(rot);
-
-        if(ov.type==="image"||ov.type==="signature"){
-          const img=await loadImg(ov.content);
-          if(img){
-            // Replicate object-fit:contain within the content box
-            const ar=(img.naturalWidth||1)/(img.naturalHeight||1);
-            let dw=contentW, dh=contentH;
-            if(contentW/contentH>ar){ dh=contentH; dw=dh*ar; }
-            else                    { dw=contentW; dh=dw/ar; }
-            const dx=offLeft+(contentW-dw)/2;
-            const dy=offTop +(contentH-dh)/2;
-            ctx.drawImage(img, dx*px, dy*px, dw*px, dh*px);
-          }
+        if(ov.type==="text"||ov.type==="date"){
+          ctx.save();
+          ctx.font=`bold ${fs}px sans-serif`;
+          ctx.fillStyle="#1c1917";
+          // Apply rotation around the text origin point
+          const rot = ((ov.rotation||0) * Math.PI) / 180;
+          ctx.translate(x, y + fs);
+          ctx.rotate(rot);
+          ctx.fillText(ov.content, 0, 0);
+          ctx.restore();
         } else {
-          // text or date: replicate DOM font + line-box placement
-          const fontSizeCss=parseFloat(cs.fontSize)||(ov.fontSize||16);
-          const lines=(ov.content||"").split("\n");
-          // Derive used line-height from measured box height (avoids "normal" string issue)
-          const lineH=lines.length>1 ? contentH/lines.length : contentH;
-          const halfLead=(lineH-fontSizeCss)/2;
-          ctx.font=`${cs.fontStyle} ${cs.fontWeight} ${fontSizeCss*px}px ${cs.fontFamily}`;
-          ctx.fillStyle=cs.color||"#1c1917";
-          ctx.textBaseline="top";
-          ctx.textAlign="left";
-          lines.forEach((ln,li)=>{
-            ctx.fillText(ln, offLeft*px, (offTop+halfLead+li*lineH)*px);
+          await new Promise<void>(res=>{
+            const img=new Image(); img.crossOrigin="anonymous";
+            img.onload=()=>{
+              // image: fontSize*8 CSS px wide; signature: fontSize*3 CSS px wide
+              const wCSS = ov.type==="image" ? (ov.fontSize||16)*8 : (ov.fontSize||16)*3;
+              const w = wCSS * scaleX;
+              const h = w * (img.naturalHeight/(img.naturalWidth||1));
+              ctx.drawImage(img,x,y,w,h); res();
+            };
+            img.onerror=()=>res();
+            img.src=ov.content;
           });
         }
-        ctx.restore();
       }
       images.push(merged.toDataURL("image/jpeg",0.95));
     }
     return images;
   };
 
+  /* ── Print: only the document pages, no app chrome ── */
   const handlePrintDoc=async()=>{
     const pages=await bakePages();
     if(!pages.length){alert("Document not ready. Scroll through all pages first.");return;}
@@ -1846,14 +1890,14 @@ export default function DocumentsPage() {
       frame.contentWindow?.print();
       setTimeout(()=>{ try{document.body.removeChild(frame);}catch(e){} },2000);
     },500);
+    // If final approver has completed, remove doc from list after print
     if(myRoute?.status==="completed"&&myRoute?.is_final){
       setTimeout(()=>{
         setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
         setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
       },1500);
     }
-  };
-
+  }
   const handleDownloadDoc=async()=>{
     const pages=await bakePages();
     if(!pages.length){alert("Document not ready. Scroll through all pages first.");return;}
@@ -1865,6 +1909,8 @@ export default function DocumentsPage() {
       ? `<div style="padding:48px 96px;font-family:'Times New Roman',serif;font-size:12pt;line-height:1.6;color:#000;">${pages[0].slice(8)}</div>`
       : pages.map((src,i)=>`<div style="page-break-after:${i<pages.length-1?"always":"avoid"};margin:0;line-height:0;"><img src="${src}" style="width:100%;display:block;"/></div>`).join("");
 
+    // Open in a new tab — user clicks Ctrl+P → Save as PDF
+    // This is the most reliable cross-browser way to get a real PDF without a paid library
     const html=`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${safeTitle}</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box}
@@ -1894,12 +1940,14 @@ export default function DocumentsPage() {
     const url=URL.createObjectURL(blob);
     const win=window.open(url,"_blank");
     if(!win){
+      // Fallback if popup blocked: download as html
       const a=document.createElement("a");
       a.href=url; a.download=safeTitle+".html";
       document.body.appendChild(a); a.click();
       document.body.removeChild(a);
     }
     setTimeout(()=>URL.revokeObjectURL(url),30000);
+    // If final approver has completed, remove doc from list after download
     if(myRoute?.status==="completed"&&myRoute?.is_final){
       setTimeout(()=>{
         setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
@@ -1907,19 +1955,21 @@ export default function DocumentsPage() {
       },1000);
     }
   };
-
   const handleDeclineRoute=async()=>{
     if(!myRoute||!activeDoc)return;
     if(!confirm("Decline this document? Everyone who has been involved will be notified."))return;
     setRouteActioning(true);
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
 
+    // 1. Mark all route steps as declined
     await supabase.from("document_routes")
       .update({status:"declined",actioned_at:new Date().toISOString()})
       .eq("document_id",activeDoc.id);
 
+    // 2. Mark document as declined
     await supabase.from("documents").update({status:"declined"}).eq("id",activeDoc.id);
 
+    // 3. Mark current user's activity log as actioned/declined
     const{data:myLog}=await supabase.from("activity_logs")
       .select("id,metadata").eq("user_id",user.id).eq("document_id",activeDoc.id).eq("action","document_received").maybeSingle();
     if(myLog){
@@ -1928,6 +1978,7 @@ export default function DocumentsPage() {
       }).eq("id",myLog.id);
     }
 
+    // 4. Get ALL route steps to know who was involved and who wasn't yet
     const{data:allRoutes}=await supabase.from("document_routes")
       .select("recipient_id,route_order,status")
       .eq("document_id",activeDoc.id)
@@ -1937,21 +1988,35 @@ export default function DocumentsPage() {
     const notifyIds: string[] = [];
 
     for(const route of (allRoutes||[])){
-      if(route.recipient_id === user.id) continue;
-      if(route.route_order < myOrder){ notifyIds.push(route.recipient_id); }
+      if(route.recipient_id === user.id) continue; // skip self
+
+      if(route.route_order < myOrder){
+        // Already acted on document — notify them it was declined
+        notifyIds.push(route.recipient_id);
+      } else if(route.route_order === myOrder){
+        // Same step (shouldn't happen) — skip
+      }
+      // route_order > myOrder → not yet involved, do NOT notify
     }
 
+    // 5. Also notify the document owner/sender (get sender_id from metadata)
     const senderId = myLog?.metadata?.sender_id;
-    if(senderId && senderId !== user.id){ notifyIds.push(senderId); }
+    if(senderId && senderId !== user.id){
+      notifyIds.push(senderId);
+    }
 
+    // 6. Insert decline notifications for those who were involved
     for(const recipientId of [...new Set(notifyIds)]){
+      // Check if they already have an activity log for this doc
       const{data:existingLog}=await supabase.from("activity_logs")
         .select("id").eq("user_id",recipientId).eq("document_id",activeDoc.id).maybeSingle();
       if(existingLog){
+        // Update their existing log
         await supabase.from("activity_logs").update({
           metadata:{document_title:docTitle,status:"actioned",action_type:"chain_declined",declined_by:user.id,declined_at:new Date().toISOString()},
         }).eq("id",existingLog.id);
       } else {
+        // Insert a fresh notification
         await supabase.from("activity_logs").insert({
           user_id:recipientId,
           action:"document_declined",
@@ -1961,6 +2026,7 @@ export default function DocumentsPage() {
       }
     }
 
+    // Generate proof for decliner too
     const{data:{user:ud}}=await supabase.auth.getUser();
     if(ud){
       const{data:profd}=await supabase.from("profiles").select("email,signature_url").eq("id",ud.id).single();
@@ -1975,6 +2041,7 @@ export default function DocumentsPage() {
 
   const handleRightClick=(e:React.MouseEvent)=>{e.preventDefault();if(!activeDoc)return;setContextPos({x:e.clientX,y:e.clientY});};
 
+  // FIX 5: insertDate handles all doc types
   const insertDate=()=>{
     const dateStr=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
     if(insertDateRef.current){
@@ -1987,6 +2054,7 @@ export default function DocumentsPage() {
     setContextPos(null);
   };
 
+  // FIX 6: insertSignature resolves URL and handles all doc types
   const insertSignature=async()=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     const{data:prof}=await supabase.from("profiles").select("signature_url").eq("id",user.id).single();
@@ -1994,8 +2062,10 @@ export default function DocumentsPage() {
     const sigUrl=await resolveStorageUrl(prof.signature_url);
     if(!sigUrl){alert("Could not load signature. Please check your Settings.");return;}
     if(insertSigRef.current){
+      // New doc TipTap editor
       insertSigRef.current(sigUrl);
     }else if(activeDoc?.format==="docx"){
+      // DOCX iframe
       document.querySelectorAll<HTMLIFrameElement>(".dp-docx-iframe").forEach(iframe=>{
         const doc=iframe.contentDocument;
         if(doc){
@@ -2012,13 +2082,15 @@ export default function DocumentsPage() {
   const handleInsertSig =useCallback((fn:(s:string)=>void)=>{insertSigRef.current=fn;},[]);
   const handleInsertImg =useCallback((fn:(s:string)=>void)=>{insertImgRef.current=fn;},[]);
 
+  /* ── Image upload handler ── */
   const handleImageUpload = useCallback(async(file: File) => {
-    imagePickerOpen.current = false;
+    imagePickerOpen.current = false; // picker closed, file selected
     if (!activeDoc) return;
     if (!file.type.match(/^image\/(jpeg|png|gif|webp)$/)) {
       alert("Only JPG, PNG, GIF, and WebP images are supported.");
       return;
     }
+    // Upload to Supabase Storage
     const { data:{ user } } = await supabase.auth.getUser();
     if (!user) return;
     const ext  = file.name.split('.').pop() || 'jpg';
@@ -2036,6 +2108,7 @@ export default function DocumentsPage() {
     } else if (target === "docx") {
       setDocxOverlays(prev => [...prev, overlay]);
     } else {
+      // new doc — place as draggable overlay (same as PDF/DOCX)
       setNewDocOverlays(prev => [...prev, overlay]);
     }
     setSaveStatus("unsaved");
@@ -2097,9 +2170,11 @@ export default function DocumentsPage() {
               <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled"/>
               <span className={`dp-save-badge ${saveStatus}`}>{saveStatus==="saved"?"● Saved":saveStatus==="saving"?"⟳ Saving…":"● Unsaved"}</span>
               {activeDoc.format!=="new"&&<span style={{fontSize:10,fontFamily:"var(--mono)",background:"var(--accent-light)",color:"var(--accent)",padding:"2px 8px",borderRadius:20}}>{activeDoc.format.toUpperCase()}</span>}
+              {/* Show route action buttons if user is a recipient, otherwise show Route button */}
               {myRoute && <span style={{fontSize:9,fontFamily:"var(--mono)",background:"#fef9c3",color:"#b45309",padding:"2px 6px",borderRadius:4,flexShrink:0}}>route:{myRoute.status}</span>}
               {myRoute && myRoute.status === "pending" ? (
                 myRoute.is_final ? (
+                  // Final recipient: Decline | Approve — then Print & Download unlock
                   <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
                     <button className="dp-btn" style={{background:"transparent",color:"#dc2626",border:"1px solid #dc2626"}} onClick={handleDeclineRoute} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -2120,6 +2195,7 @@ export default function DocumentsPage() {
                     </button>
                   </div>
                 ) : (
+                  // Middle recipient: Decline | Message | Approve
                   <div style={{display:"flex",gap:6,flexShrink:0}}>
                     <button className="dp-btn" style={{background:"transparent",color:"#dc2626",border:"1px solid #dc2626"}} onClick={handleDeclineRoute} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -2136,6 +2212,7 @@ export default function DocumentsPage() {
                   </div>
                 )
               ) : myRoute && myRoute.status === "completed" && myRoute.is_final ? (
+                // Final recipient already approved — keep Download & Print active
                 <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
                   <span style={{fontSize:11,fontFamily:"var(--mono)",background:"#dcfce7",color:"#16a34a",padding:"3px 10px",borderRadius:20}}>✓ Approved</span>
                   <div style={{width:1,height:20,background:"var(--border)",flexShrink:0,margin:"0 2px"}}/>
@@ -2153,6 +2230,7 @@ export default function DocumentsPage() {
                   {myRoute.status==="declined"?"✗ Declined":"✓ Actioned"}
                 </span>
               ) : (
+                // Owner/sender: show Route button
                 !(activeDoc as any).isShared && <button className="dp-btn dp-btn-ghost" onClick={openRoutingModal}><Ico.Route/> Route</button>
               )}
               {avatarUrl&&<img src={avatarUrl} alt="avatar" crossOrigin="anonymous" style={{width:30,height:30,borderRadius:"50%",objectFit:"cover",flexShrink:0,border:"2px solid var(--accent-light)"}}/>}
@@ -2238,6 +2316,7 @@ export default function DocumentsPage() {
                         if(pdfTool==="date"){
                           content=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
                         }else if(pdfTool==="signature"){
+                          // FIX 2: resolve signature URL before storing
                           const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
                           const{data:prof}=await supabase.from("profiles").select("signature_url").eq("id",user.id).single();
                           if(!prof?.signature_url){alert("No signature uploaded yet.");return;}
@@ -2268,19 +2347,18 @@ export default function DocumentsPage() {
                             <span>{ov.fontSize||16}px</span>
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}>−</button>
                           </div>
-                          {/* ── data-ovid added to every inner element so bakePages can measure exact rendered geometry ── */}
                           {ov.type==="image"?(
-                            <img data-ovid={ov.id} src={ov.content} alt="attachment" crossOrigin="anonymous"
+                            <img src={ov.content} alt="attachment" crossOrigin="anonymous"
                               style={{width:ov.fontSize?ov.fontSize*8:160,maxWidth:400,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:3}}
                               onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
                           ):ov.type==="signature"?(
-                            <img data-ovid={ov.id} src={ov.content} alt="sig" crossOrigin="anonymous"
+                            <img src={ov.content} alt="sig" crossOrigin="anonymous"
                               style={{height:ov.fontSize?ov.fontSize*3:48,maxWidth:300,display:"block",objectFit:"contain",pointerEvents:"none"}}
                               onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
                           ):ov.type==="date"?(
-                            <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,display:"inline-block"}}>{ov.content}</span>
+                            <span className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,display:"inline-block"}}>{ov.content}</span>
                           ):(
-                            <div data-ovid={ov.id} ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable={!isLocked(ov)} suppressContentEditableWarning
+                            <div ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable={!isLocked(ov)} suppressContentEditableWarning
                               className="dp-pdf-overlay-text"
                               style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,cursor:isLocked(ov)?"not-allowed":"move",opacity:isLocked(ov)?0.85:1,outline:isLocked(ov)?"none":undefined}}
                               title={isLocked(ov)?"Placed by a previous recipient — cannot be edited":""}
@@ -2321,6 +2399,7 @@ export default function DocumentsPage() {
                 </div>
               )}
               {docxPdfReady&&docxPdfDoc&&(<>
+                {/* Same toolbar as PDF */}
                 <div className="dp-pdf-toolbar">
                   <span className="dp-pdf-toolbar-label">Place on document:</span>
                   {(["text","date","signature","image"] as const).map(tool=>(
@@ -2388,19 +2467,18 @@ export default function DocumentsPage() {
                               <span>{ov.fontSize||16}px</span>
                               <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}}>−</button>
                             </div>
-                            {/* ── data-ovid added to every inner element so bakePages can measure exact rendered geometry ── */}
                             {ov.type==="image"?(
-                              <img data-ovid={ov.id} src={ov.content} alt="attachment" crossOrigin="anonymous"
+                              <img src={ov.content} alt="attachment" crossOrigin="anonymous"
                                 style={{width:ov.fontSize?ov.fontSize*8:160,maxWidth:400,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:3}}
                                 onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
                             ):ov.type==="signature"?(
-                              <img data-ovid={ov.id} src={ov.content} alt="sig" crossOrigin="anonymous"
+                              <img src={ov.content} alt="sig" crossOrigin="anonymous"
                                 style={{height:ov.fontSize?ov.fontSize*3:48,maxWidth:300,display:"block",objectFit:"contain",pointerEvents:"none"}}
                                 onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
                             ):ov.type==="date"?(
-                              <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16}}>{ov.content}</span>
+                              <span className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16}}>{ov.content}</span>
                             ):(
-                              <div data-ovid={ov.id} ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable suppressContentEditableWarning
+                              <div ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable suppressContentEditableWarning
                                 className="dp-pdf-overlay-text"
                                 style={{fontSize:ov.fontSize||16}}
                                 onMouseDown={e=>{if(document.activeElement===e.currentTarget)e.stopPropagation();}}
@@ -2460,6 +2538,7 @@ export default function DocumentsPage() {
                         onUpdate={c=>{setEditorPages(prev=>{const u=[...prev];u[i]=c;return u;});setSaveStatus("unsaved");}}
                         onInsertDate={handleInsertDate} onInsertSignature={handleInsertSig} onInsertImage={handleInsertImg}
                       />
+                      {/* Image overlays for new docs — draggable/resizable like PDF overlays */}
                       {newDocOverlays.filter(o=>o.pageIdx===i).map(ov=>(
                         <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:"move",userSelect:"none",zIndex:10}}
                           onMouseDown={e=>{
@@ -2481,6 +2560,7 @@ export default function DocumentsPage() {
                             document.addEventListener("mousemove",onMove);
                             document.addEventListener("mouseup",onUp);
                           }}>
+                          {/* Resize controls */}
                           <div style={{position:"absolute",top:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:12,opacity:0}}
                             className="nd-img-ctrl"
                             onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.opacity="1";}}
@@ -2547,6 +2627,7 @@ export default function DocumentsPage() {
               Click users to add them in approval order. The <strong>last person</strong> selected is the final approver and can print or save the document.
             </p>
 
+            {/* Selected route — ordered steps */}
             {selectedRoute.length>0&&(
               <div style={{marginBottom:12,background:"var(--accent-light)",borderRadius:8,padding:"8px 12px"}}>
                 <div style={{fontSize:11,fontWeight:600,color:"var(--accent)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
@@ -2573,6 +2654,7 @@ export default function DocumentsPage() {
               </div>
             )}
 
+            {/* User list */}
             <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
               {currentOrgId?"Organization Members":"All Users"} — click to add
             </div>
@@ -2608,6 +2690,7 @@ export default function DocumentsPage() {
         </div>
       )}
 
+      {/* ── Authentication confirmation modal ── */}
       {showAuthModal&&(
         <div className="dp-auth-backdrop" onClick={()=>{if(!authLoading){setShowAuthModal(false);setAuthPassword("");setAuthError("");}}}>
           <div className="dp-auth-modal" onClick={e=>e.stopPropagation()}>
@@ -2642,6 +2725,7 @@ export default function DocumentsPage() {
         </div>
       )}
 
+      {/* ── Comments FAB (only visible when a doc is open and user is involved) ── */}
       {activeDoc&&(myRoute||isInitiator)&&(
         <button className="dp-comments-fab" onClick={()=>{setShowComments(o=>!o);if(!showComments&&activeDoc)loadComments(activeDoc.id);}}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -2649,6 +2733,7 @@ export default function DocumentsPage() {
         </button>
       )}
 
+      {/* ── Comments dialog ── */}
       {showComments&&activeDoc&&(
         <div className="dp-comments-dialog">
           <div className="dp-comments-header">
