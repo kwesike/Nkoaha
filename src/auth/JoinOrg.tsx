@@ -12,10 +12,10 @@ export default function JoinOrg() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token   = params.get("invite");
-    const orgId   = params.get("org");
-    const name    = params.get("name") || "the organisation";
-    const email   = params.get("email") || "";
+    const token  = params.get("invite");
+    const orgId  = params.get("org");
+    const name   = params.get("name") || "the organisation";
+    const email  = params.get("email") || "";
     setOrgName(name);
 
     if (!token || !orgId) {
@@ -24,53 +24,61 @@ export default function JoinOrg() {
       return;
     }
 
-    // ── Key fix: use a `handled` flag so joinOrg is never called twice ──
-    // Supabase fires both onAuthStateChange AND getSession can return a session,
-    // which caused double-execution and race conditions.
     let handled = false;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    async function tryJoin(userId: string, userEmail: string) {
       if (handled) return;
-      // USER_UPDATED fires for magic links in Supabase v2; SIGNED_IN also fires
-      if ((event === "SIGNED_IN" || event === "USER_UPDATED") && session?.user) {
-        handled = true;
-        setStatus("joining");
-        await joinOrg(session.user.id, session.user.email || email, orgId, token, name);
-      }
-    });
+      handled = true;
+      setStatus("joining");
+      await processInvite(userId, userEmail, orgId!, token!, name);
+    }
 
-    // Also check if session already exists (user clicked link in same browser)
-    supabase.auth.getSession().then(async ({ data }) => {
-      if (handled) return;
+    // ── Strategy 1: onAuthStateChange (fires when Supabase processes hash) ──
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (handled) return;
+        if (session?.user && (event === "SIGNED_IN" || event === "USER_UPDATED")) {
+          await tryJoin(session.user.id, session.user.email || email);
+        }
+      }
+    );
+
+    // ── Strategy 2: poll getSession every 500ms for up to 10s ──
+    // Supabase v2 processes the #access_token hash asynchronously.
+    // getSession() returns null until it's done — polling catches it reliably.
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      if (handled) { clearInterval(poll); return; }
+      attempts++;
+      const { data } = await supabase.auth.getSession();
       if (data.session?.user) {
-        handled = true;
-        setStatus("joining");
-        await joinOrg(data.session.user.id, data.session.user.email || email, orgId, token, name);
+        clearInterval(poll);
+        await tryJoin(data.session.user.id, data.session.user.email || email);
       }
-    });
-
-    // ── Timeout: if no session after 8s, Supabase redirected to login instead ──
-    // Root cause: /join-org must be whitelisted in Supabase →
-    //   Auth → URL Configuration → Redirect URLs:
-    //     https://nkoaha.space/join-org
-    //     https://nkoaha.space/join-org/*
-    //     http://localhost:5173/join-org
-    //     http://localhost:5173/join-org/*
-    const timeout = setTimeout(() => {
-      if (!handled) {
-        setStatus("error");
-        setMessage(
-          "Your invite session expired or the link was already used. " +
-          "Please ask the admin to resend the invite."
-        );
+      if (attempts >= 20) { // 10 seconds
+        clearInterval(poll);
+        if (!handled) {
+          setStatus("error");
+          setMessage(
+            "Could not verify your invite session. The link may have expired or already been used. " +
+            "Please ask the admin to send a new invite."
+          );
+        }
       }
-    }, 8000);
+    }, 500);
 
-    return () => { subscription.unsubscribe(); clearTimeout(timeout); };
+    return () => {
+      subscription.unsubscribe();
+      clearInterval(poll);
+    };
   }, []);
 
-  async function joinOrg(userId: string, userEmail: string, orgId: string, token: string, name: string) {
+  async function processInvite(
+    userId: string, userEmail: string,
+    orgId: string, token: string, name: string
+  ) {
     try {
+      // Verify invite
       const { data: invite } = await supabase
         .from("organization_invites")
         .select("id,status,invite_token,expires_at")
@@ -85,15 +93,17 @@ export default function JoinOrg() {
       }
 
       if (invite.status === "accepted") {
+        // Already a member — check MFA and redirect
         localStorage.setItem("nkoaha_role", "organization_member");
         localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
         setStatus("done");
         setMessage(`You are already a member of ${name}.`);
         const { data: factors } = await supabase.auth.mfa.listFactors();
-        const hasMFA = factors?.totp?.some((f:any) => f.status === "verified");
-        setTimeout(() => navigate(hasMFA ? "/dashboard/organizationmembersdashboard" : "/mfa-setup", {
-          state: { destination: "/dashboard/organizationmembersdashboard" }
-        }), 2000);
+        const hasMFA = factors?.totp?.some((f: any) => f.status === "verified");
+        setTimeout(() => navigate(
+          hasMFA ? "/dashboard/organizationmembersdashboard" : "/mfa-setup",
+          { state: { destination: "/dashboard/organizationmembersdashboard" } }
+        ), 2000);
         return;
       }
 
@@ -103,35 +113,32 @@ export default function JoinOrg() {
         return;
       }
 
-      // Update profile role + org
-      const { error: profileErr } = await supabase.from("profiles")
+      // Add to org
+      const { error: profileErr } = await supabase
+        .from("profiles")
         .update({ organization_id: orgId, role: "organization_member" })
         .eq("id", userId);
 
       if (profileErr) {
         await supabase.from("profiles").upsert({
-          id:              userId,
-          email:           userEmail,
-          role:            "organization_member",
-          organization_id: orgId,
+          id: userId, email: userEmail,
+          role: "organization_member", organization_id: orgId,
         });
       }
 
+      // Mark accepted
       await supabase.from("organization_invites")
         .update({ status: "accepted" })
         .eq("id", invite.id);
 
+      // Notify owner
       const { data: org } = await supabase
         .from("organizations").select("owner_id,name").eq("id", orgId).single();
       if (org?.owner_id) {
         await supabase.from("activity_logs").insert({
-          user_id:  org.owner_id,
-          action:   "member_joined",
-          metadata: {
-            member_email:      userEmail,
-            organization_name: org.name,
-            status:            "pending",
-          },
+          user_id: org.owner_id,
+          action: "member_joined",
+          metadata: { member_email: userEmail, organization_name: org.name, status: "pending" },
         });
       }
 
@@ -139,10 +146,12 @@ export default function JoinOrg() {
       localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
 
       setStatus("done");
-      setMessage(`Welcome to ${name}! Setting up your account security…`);
+      setMessage(`Welcome to ${name}! Setting up your account…`);
+
+      // → Password setup → MFA setup → member dashboard
       setTimeout(() => navigate("/mfa-setup", {
         state: { destination: "/dashboard/organizationmembersdashboard" }
-      }), 2000);
+      }), 1500);
 
     } catch (err: any) {
       setStatus("error");
@@ -157,39 +166,31 @@ export default function JoinOrg() {
           <img src={logo} alt="NkoAha" />
         </div>
 
-        {status === "loading" && (
-          <>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
-            <h2>Joining {orgName || "organisation"}…</h2>
-            <p className="auth-subtitle">Verifying your invite link, please wait.</p>
-          </>
-        )}
+        {status === "loading" && (<>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
+          <h2>Joining {orgName || "organisation"}…</h2>
+          <p className="auth-subtitle">Verifying your invite link, please wait.</p>
+        </>)}
 
-        {status === "joining" && (
-          <>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>🔄</div>
-            <h2>Setting up your account…</h2>
-            <p className="auth-subtitle">Adding you to {orgName}, just a moment.</p>
-          </>
-        )}
+        {status === "joining" && (<>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>🔄</div>
+          <h2>Setting up your account…</h2>
+          <p className="auth-subtitle">Adding you to {orgName}, just a moment.</p>
+        </>)}
 
-        {status === "done" && (
-          <>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>🎉</div>
-            <h2 style={{ color: "#16a34a" }}>You're in!</h2>
-            <p className="auth-subtitle" style={{ color: "#16a34a" }}>{message}</p>
-            <p className="auth-subtitle" style={{ marginTop: 8 }}>Redirecting you to your dashboard…</p>
-          </>
-        )}
+        {status === "done" && (<>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🎉</div>
+          <h2 style={{ color: "#16a34a" }}>You're in!</h2>
+          <p className="auth-subtitle" style={{ color: "#16a34a" }}>{message}</p>
+          <p className="auth-subtitle" style={{ marginTop: 8 }}>Redirecting you now…</p>
+        </>)}
 
-        {status === "error" && (
-          <>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>❌</div>
-            <h2 style={{ color: "#dc2626" }}>Invite Error</h2>
-            <p className="auth-subtitle" style={{ color: "#dc2626", marginBottom: 16 }}>{message}</p>
-            <a href="/" style={{ color: "#7c3aed", fontSize: 13 }}>← Back to login</a>
-          </>
-        )}
+        {status === "error" && (<>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>❌</div>
+          <h2 style={{ color: "#dc2626" }}>Invite Error</h2>
+          <p className="auth-subtitle" style={{ color: "#dc2626", marginBottom: 16 }}>{message}</p>
+          <a href="/" style={{ color: "#7c3aed", fontSize: 13 }}>← Back to login</a>
+        </>)}
       </div>
     </div>
   );
