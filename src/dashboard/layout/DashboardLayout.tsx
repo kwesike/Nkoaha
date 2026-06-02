@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, Suspense, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabase";
 import { useNavigate, useLocation } from "react-router-dom";
 import Topbar from "./Topbar";
@@ -44,6 +44,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
         localStorage.setItem("nkoaha_role", dbRole);
         localStorage.setItem("nkoaha_name", dbName || user.email?.split("@")[0] || "");
+
+        // Admin users should not use DashboardLayout — redirect to admin panel
+        if ((dbRole as string) === "admin") {
+          navigate("/dashboard/admin", { replace: true });
+          return;
+        }
 
         setRole(dbRole);
         setDisplayName(dbName || user.email?.split("@")[0] || "User");
@@ -173,7 +179,24 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       <Topbar onLogout={logout} role={role} displayName={displayName} />
       <div className="dashboard-body">
         <Sidebar role={role} />
-        <main className="dashboard-content">{children}</main>
+        <main className="dashboard-content">
+          <Suspense fallback={
+            <div style={{padding:32}}>
+              {[120,80,200,160,100].map((w,i) => (
+                <div key={i} style={{
+                  height:14,width:w,borderRadius:7,marginBottom:14,
+                  background:"linear-gradient(90deg,#e9e7e4 25%,#f0ede8 50%,#e9e7e4 75%)",
+                  backgroundSize:"600px 100%",
+                  animation:"shimmer 1.5s infinite",
+                  animationDelay:`${i*0.08}s`
+                }}/>
+              ))}
+              <style>{`@keyframes shimmer{0%{background-position:-600px 0}100%{background-position:600px 0}}`}</style>
+            </div>
+          }>
+            {children}
+          </Suspense>
+        </main>
       </div>
       {!location.pathname.includes('/documents') && (
         <SupportChat hasPremium={hasPremium} />
