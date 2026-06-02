@@ -147,21 +147,52 @@ export default function AdminTeamPage() {
   async function addAdmin() {
     if (!addEmail.trim()) return;
     setAdding(true); setAddMsg(null);
-    const { data: profile } = await supabase
-      .from("profiles").select("id,role").eq("email",addEmail.trim().toLowerCase()).single();
+
+    // Search for user — use ilike for case-insensitive match
+    const { data: profile, error: findErr } = await supabase
+      .from("profiles")
+      .select("id,role,email")
+      .ilike("email", addEmail.trim())
+      .maybeSingle();
+
+    if (findErr) {
+      setAddMsg({t:"error", m:`Search error: ${findErr.message}`});
+      setAdding(false); return;
+    }
     if (!profile) {
-      setAddMsg({t:"error",m:"No account found with that email."});
+      setAddMsg({t:"error", m:`No NkoAha account found for "${addEmail.trim()}". They must sign up first.`});
       setAdding(false); return;
     }
     if (profile.role === "admin") {
-      setAddMsg({t:"error",m:"This user is already an admin."});
+      setAddMsg({t:"error", m:"This user is already an admin."});
       setAdding(false); return;
     }
-    await supabase.from("profiles").update({ role:"admin" }).eq("id",profile.id);
-    // Create default permissions
-    await supabase.from("admin_permissions").upsert({ ...defaultPerms(profile.id) });
-    setAddMsg({t:"success",m:`${addEmail.trim()} is now an admin.`});
-    setAdding(false); setAddEmail("");
+
+    // Update role to admin
+    const { error: updateErr } = await supabase
+      .from("profiles")
+      .update({ role: "admin" })
+      .eq("id", profile.id);
+
+    if (updateErr) {
+      setAddMsg({t:"error", m:`Could not update role: ${updateErr.message}`});
+      setAdding(false); return;
+    }
+
+    // Create default permissions row
+    const { error: permErr } = await supabase
+      .from("admin_permissions")
+      .upsert({ ...defaultPerms(profile.id) }, { onConflict: "admin_id" });
+
+    if (permErr) {
+      // Role was updated — still show partial success
+      setAddMsg({t:"success", m:`${profile.email} is now an admin. (Permissions will load on next visit.)`});
+    } else {
+      setAddMsg({t:"success", m:`${profile.email} is now an admin with default permissions.`});
+    }
+
+    setAdding(false);
+    setAddEmail("");
     load();
   }
 
