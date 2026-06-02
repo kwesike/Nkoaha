@@ -24,28 +24,53 @@ export default function JoinOrg() {
       return;
     }
 
-    // Wait for Supabase to process the magic link hash
+    // ── Key fix: use a `handled` flag so joinOrg is never called twice ──
+    // Supabase fires both onAuthStateChange AND getSession can return a session,
+    // which caused double-execution and race conditions.
+    let handled = false;
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if ((event === "SIGNED_IN" || event === "PASSWORD_RECOVERY") && session?.user) {
+      if (handled) return;
+      // USER_UPDATED fires for magic links in Supabase v2; SIGNED_IN also fires
+      if ((event === "SIGNED_IN" || event === "USER_UPDATED") && session?.user) {
+        handled = true;
         setStatus("joining");
         await joinOrg(session.user.id, session.user.email || email, orgId, token, name);
       }
     });
 
-    // Also check if already signed in
+    // Also check if session already exists (user clicked link in same browser)
     supabase.auth.getSession().then(async ({ data }) => {
+      if (handled) return;
       if (data.session?.user) {
+        handled = true;
         setStatus("joining");
         await joinOrg(data.session.user.id, data.session.user.email || email, orgId, token, name);
       }
     });
 
-    return () => subscription.unsubscribe();
+    // ── Timeout: if no session after 8s, Supabase redirected to login instead ──
+    // Root cause: /join-org must be whitelisted in Supabase →
+    //   Auth → URL Configuration → Redirect URLs:
+    //     https://nkoaha.space/join-org
+    //     https://nkoaha.space/join-org/*
+    //     http://localhost:5173/join-org
+    //     http://localhost:5173/join-org/*
+    const timeout = setTimeout(() => {
+      if (!handled) {
+        setStatus("error");
+        setMessage(
+          "Your invite session expired or the link was already used. " +
+          "Please ask the admin to resend the invite."
+        );
+      }
+    }, 8000);
+
+    return () => { subscription.unsubscribe(); clearTimeout(timeout); };
   }, []);
 
   async function joinOrg(userId: string, userEmail: string, orgId: string, token: string, name: string) {
     try {
-      // Verify invite token is valid and not expired
       const { data: invite } = await supabase
         .from("organization_invites")
         .select("id,status,invite_token,expires_at")
@@ -60,12 +85,10 @@ export default function JoinOrg() {
       }
 
       if (invite.status === "accepted") {
-        // Already joined — just redirect
         localStorage.setItem("nkoaha_role", "organization_member");
         localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
         setStatus("done");
         setMessage(`You are already a member of ${name}.`);
-        // Check if MFA already set up
         const { data: factors } = await supabase.auth.mfa.listFactors();
         const hasMFA = factors?.totp?.some((f:any) => f.status === "verified");
         setTimeout(() => navigate(hasMFA ? "/dashboard/organizationmembersdashboard" : "/mfa-setup", {
@@ -74,20 +97,18 @@ export default function JoinOrg() {
         return;
       }
 
-      // Check expiry
       if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
         setStatus("error");
         setMessage("This invite link has expired. Please ask the admin to resend.");
         return;
       }
 
-      // Join: update profile role + org
+      // Update profile role + org
       const { error: profileErr } = await supabase.from("profiles")
         .update({ organization_id: orgId, role: "organization_member" })
         .eq("id", userId);
 
       if (profileErr) {
-        // Profile might not exist yet (brand new user) — insert it
         await supabase.from("profiles").upsert({
           id:              userId,
           email:           userEmail,
@@ -96,12 +117,10 @@ export default function JoinOrg() {
         });
       }
 
-      // Mark invite as accepted
       await supabase.from("organization_invites")
         .update({ status: "accepted" })
         .eq("id", invite.id);
 
-      // Notify org owner
       const { data: org } = await supabase
         .from("organizations").select("owner_id,name").eq("id", orgId).single();
       if (org?.owner_id) {
@@ -109,20 +128,18 @@ export default function JoinOrg() {
           user_id:  org.owner_id,
           action:   "member_joined",
           metadata: {
-            member_email: userEmail,
+            member_email:      userEmail,
             organization_name: org.name,
-            status: "pending",
+            status:            "pending",
           },
         });
       }
 
-      // Cache role
       localStorage.setItem("nkoaha_role", "organization_member");
       localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
 
       setStatus("done");
       setMessage(`Welcome to ${name}! Setting up your account security…`);
-      // Always send new members through MFA setup
       setTimeout(() => navigate("/mfa-setup", {
         state: { destination: "/dashboard/organizationmembersdashboard" }
       }), 2000);
