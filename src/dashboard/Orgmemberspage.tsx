@@ -203,7 +203,10 @@ export default function OrgMembersPage() {
     // ── PATH A: Not registered — send email invite via magic link ──
     if (foundUser.id === "") {
       const token    = `${orgId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
-      const joinLink = `${window.location.origin}/join-org?invite=${token}&org=${orgId}&name=${encodeURIComponent(orgName)}&email=${encodeURIComponent(foundUser.email)}`;
+      // Hardcoded origin — must match exactly what is in Supabase Auth → Redirect URLs
+      // window.location.origin returns www.nkoaha.space which Supabase rejects
+      const origin = "https://nkoaha.space";
+      const joinLink = `${origin}/join-org?invite=${token}&org=${orgId}&name=${encodeURIComponent(orgName)}&email=${encodeURIComponent(foundUser.email)}`;
 
       const { error: invErr } = await supabase.from("organization_invites").insert({
         organization_id: orgId,
