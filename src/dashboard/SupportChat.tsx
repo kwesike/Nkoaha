@@ -7,36 +7,59 @@ const STYLES = `
   .sc-fab-btn:hover{background:#6d28d9;transform:scale(1.07)}
   .sc-fab-btn.open{background:#1c1917}
   .sc-fab-badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;border-radius:20px;background:#dc2626;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;pointer-events:none;border:2px solid #fff}
-  .sc-window{width:340px;background:#fff;border-radius:18px;box-shadow:0 16px 56px rgba(0,0,0,.18);border:1px solid #e7e4df;overflow:hidden;animation:sc-in .2s ease;display:flex;flex-direction:column;max-height:520px}
+  .sc-window{width:340px;background:#fff;border-radius:18px;box-shadow:0 16px 56px rgba(0,0,0,.18);border:1px solid #e7e4df;overflow:hidden;animation:sc-in .2s ease;display:flex;flex-direction:column;max-height:560px}
   @keyframes sc-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
-  .sc-header{background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:16px 18px;display:flex;align-items:center;gap:10px;flex-shrink:0}
-  .sc-header-avatar{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+  .sc-header{background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:14px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+  .sc-header-avatar{width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
   .sc-header-info{flex:1}
-  .sc-header-name{font-size:14px;font-weight:700;color:#fff}
-  .sc-header-status{font-size:11px;color:rgba(255,255,255,.7);display:flex;align-items:center;gap:4px}
-  .sc-status-dot{width:6px;height:6px;border-radius:50%;background:#4ade80}
-  .sc-close{background:none;border:none;color:rgba(255,255,255,.7);cursor:pointer;font-size:20px;line-height:1;padding:0}
-  .sc-close:hover{color:#fff}
+  .sc-header-name{font-size:13px;font-weight:700;color:#fff}
+  .sc-header-status{font-size:10px;color:rgba(255,255,255,.7);display:flex;align-items:center;gap:4px;margin-top:1px}
+  .sc-status-dot{width:5px;height:5px;border-radius:50%;background:#4ade80;flex-shrink:0}
+  .sc-header-actions{display:flex;gap:6px}
+  .sc-close{background:none;border:none;color:rgba(255,255,255,.6);cursor:pointer;font-size:18px;line-height:1;padding:2px 4px;border-radius:4px;transition:all .15s}
+  .sc-close:hover{color:#fff;background:rgba(255,255,255,.15)}
+  .sc-end-btn{background:rgba(220,38,38,.3);border:1px solid rgba(220,38,38,.5);color:#fca5a5;cursor:pointer;font-size:10px;font-weight:600;padding:3px 8px;border-radius:6px;font-family:'DM Sans',sans-serif;transition:all .15s;white-space:nowrap}
+  .sc-end-btn:hover{background:rgba(220,38,38,.5);color:#fff}
   .sc-messages{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;background:#faf9f8}
-  .sc-msg{max-width:82%;padding:9px 13px;border-radius:14px;font-size:13px;line-height:1.5;font-family:'DM Sans',sans-serif}
-  .sc-msg.user{background:#7c3aed;color:#fff;align-self:flex-end;border-bottom-right-radius:3px}
-  .sc-msg.support{background:#fff;color:#1c1917;align-self:flex-start;border-bottom-left-radius:3px;border:1px solid #e7e4df}
+  .sc-msg-group{display:flex;flex-direction:column}
+  .sc-msg-group.user{align-items:flex-end}
+  .sc-msg-group.support{align-items:flex-start}
+  .sc-msg-sender{font-size:10px;font-weight:600;color:#78716c;margin-bottom:3px;padding:0 2px}
+  .sc-msg{max-width:82%;padding:9px 13px;border-radius:14px;font-size:13px;line-height:1.5}
+  .sc-msg.user{background:#7c3aed;color:#fff;border-bottom-right-radius:3px}
+  .sc-msg.support{background:#fff;color:#1c1917;border-bottom-left-radius:3px;border:1px solid #e7e4df}
   .sc-msg.support.unread{border-color:#7c3aed;background:#faf8ff}
-  .sc-msg-time{font-size:10px;opacity:.6;margin-top:3px}
+  .sc-msg-time{font-size:10px;opacity:.55;margin-top:3px;padding:0 2px}
+  .sc-ended-banner{padding:10px 14px;background:#fef3c7;border-top:1px solid #fde68a;text-align:center;font-size:12px;color:#b45309;font-style:italic;flex-shrink:0}
   .sc-input-row{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #e7e4df;background:#fff;flex-shrink:0}
   .sc-input{flex:1;padding:9px 12px;border:1.5px solid #e7e4df;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;color:#1c1917;outline:none;resize:none;max-height:80px;transition:border-color .15s;line-height:1.4}
   .sc-input:focus{border-color:#7c3aed}
+  .sc-input:disabled{background:#faf9f8;color:#a8a29e}
   .sc-send{background:#7c3aed;color:#fff;border:none;border-radius:10px;padding:9px 14px;cursor:pointer;font-size:13px;font-weight:600;transition:background .15s;white-space:nowrap;flex-shrink:0}
   .sc-send:hover{background:#6d28d9}.sc-send:disabled{opacity:.5;cursor:not-allowed}
-  .sc-notice{font-size:11px;color:#78716c;text-align:center;padding:6px 14px 8px;font-style:italic}
+  .sc-notice{font-size:11px;color:#78716c;text-align:center;padding:5px 14px 7px;font-style:italic;background:#fff;flex-shrink:0}
+  .sc-history-btn{display:block;width:100%;padding:9px;background:#f5f3ef;border:none;border-top:1px solid #e7e4df;font-size:12px;color:#7c3aed;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;transition:background .15s;flex-shrink:0}
+  .sc-history-btn:hover{background:#ede9fe}
+  .sc-no-session{padding:20px 16px;text-align:center;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}
+  .sc-start-btn{background:#7c3aed;color:#fff;border:none;border-radius:10px;padding:10px 20px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s;margin-top:4px}
+  .sc-start-btn:hover{background:#6d28d9}
 `;
 
 interface Msg {
-  id:     string;
-  text:   string;
-  sender: "user" | "support";
-  time:   string;
-  read:   boolean;
+  id:        string;
+  text:      string;
+  sender:    "user" | "support";
+  time:      string;
+  read:      boolean;
+  senderName?: string;
+}
+
+interface ChatSession {
+  id:        string;
+  status:    "open" | "closed";
+  startedAt: string;
+  endedAt?:  string;
+  endedBy?:  string;
 }
 
 interface SupportChatProps {
@@ -44,22 +67,24 @@ interface SupportChatProps {
 }
 
 export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProps) {
-  const [open, setOpen]         = useState(false);
-  const [messages, setMessages] = useState<Msg[]>([
-    { id:"0", text:"👋 Hi! How can we help you today?", sender:"support", time:new Date().toISOString(), read:true }
-  ]);
-  const [input, setInput]       = useState("");
-  const [sending, setSending]   = useState(false);
-  const [userId, setUserId]     = useState("");
-  const [userEmail, setUserEmail] = useState("");
-  const [userName, setUserName]   = useState("");
-  const [userRole, setUserRole]   = useState("");
-  const [userPlan, setUserPlan]   = useState("Free");
+  const [open, setOpen]             = useState(false);
+  const [messages, setMessages]     = useState<Msg[]>([]);
+  const [session, setSession]       = useState<ChatSession | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [pastSessions, setPastSessions] = useState<ChatSession[]>([]);
+  const [input, setInput]           = useState("");
+  const [sending, setSending]       = useState(false);
+  const [userId, setUserId]         = useState("");
+  const [userEmail, setUserEmail]   = useState("");
+  const [userName, setUserName]     = useState("");
+  const [userRole, setUserRole]     = useState("individual");
+  const [userPlan, setUserPlan]     = useState("Free");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const unreadCount = messages.filter(m => m.sender === "support" && !m.read).length;
+  const chatEnded   = session?.status === "closed";
 
-  // Load user info + plan on mount
+  // Load user info on mount
   useEffect(() => {
     const id = "sc-styles";
     if (!document.getElementById(id)) {
@@ -70,9 +95,8 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
       if (!user) return;
       setUserId(user.id);
       setUserEmail(user.email || "");
-      setUserName(user.email?.split("@")[0] || "");
+      setUserName(user.email?.split("@")[0] || "User");
 
-      // Fetch role and plan for admin inbox context
       const { data: profile } = await supabase
         .from("profiles").select("role").eq("id", user.id).single();
       setUserRole(profile?.role || "individual");
@@ -81,70 +105,138 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
         .from("subscriptions").select("plan_id")
         .eq("user_id", user.id).eq("status","active")
         .order("created_at",{ascending:false}).limit(1).maybeSingle();
-
       const plan = sub?.plan_id || "free";
       setUserPlan(
         plan === "free" ? "Free" :
         plan.replace("org_","Org ").replace("ind_","Ind ")
           .replace(/_/g," ").replace(/\b\w/g, c => c.toUpperCase())
       );
+
+      // Load active session if exists
+      await loadActiveSession(user.id);
     });
   }, []);
 
-  // Mark all as read when chat opens
+  async function loadActiveSession(uid: string) {
+    const { data } = await supabase
+      .from("support_chats")
+      .select("id,status,started_at,ended_at,ended_by")
+      .eq("user_id", uid)
+      .eq("status", "open")
+      .order("started_at",{ascending:false})
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      setSession({ id:data.id, status:"open", startedAt:data.started_at });
+      await loadMessages(data.id, uid);
+    }
+  }
+
+  async function loadMessages(sessionId: string, uid: string) {
+    const { data } = await supabase
+      .from("activity_logs")
+      .select("id,action,metadata,created_at")
+      .eq("user_id", uid)
+      .eq("chat_session_id", sessionId)
+      .in("action", ["support_message","support_reply"])
+      .order("created_at",{ascending:true});
+
+    if (data) {
+      setMessages((data).map((r:any) => ({
+        id:         r.id,
+        text:       r.metadata?.message || "",
+        sender:     r.action === "support_message" ? "user" : "support",
+        time:       r.created_at,
+        read:       true,
+        senderName: r.action === "support_reply"
+          ? (r.metadata?.admin_name || "NkoAha Support")
+          : (r.metadata?.user_name || "You"),
+      })));
+    }
+  }
+
+  async function startNewChat() {
+    if (!userId) return;
+    const { data, error } = await supabase
+      .from("support_chats")
+      .insert({ user_id: userId, status: "open" })
+      .select("id,status,started_at")
+      .single();
+    if (error || !data) return;
+    setSession({ id:data.id, status:"open", startedAt:data.started_at });
+    setMessages([{
+      id:     "welcome",
+      text:   "👋 Hi! How can we help you today?",
+      sender: "support",
+      time:   new Date().toISOString(),
+      read:   true,
+      senderName: "NkoAha Support",
+    }]);
+  }
+
+  // Mark all as read when chat opened
   useEffect(() => {
     if (open) setMessages(prev => prev.map(m => ({ ...m, read: true })));
   }, [open]);
 
-  // Realtime: listen for support_reply rows → show in chat
+  // Realtime: new messages in this session
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !session?.id) return;
     const channel = supabase
-      .channel(`support-replies-${userId}`)
+      .channel(`support-chat-${session.id}`)
       .on("postgres_changes", {
-        event:  "INSERT",
-        schema: "public",
-        table:  "activity_logs",
+        event: "INSERT", schema: "public", table: "activity_logs",
         filter: `user_id=eq.${userId}`,
       }, (payload) => {
-        if (payload.new.action !== "support_reply") return;
-        const meta = payload.new.metadata || {};
-        setMessages(prev => [...prev, {
-          id:     payload.new.id || Date.now().toString(),
-          text:   meta.message || "",
-          sender: "support",
-          time:   meta.sent_at || new Date().toISOString(),
-          read:   open,
-        }]);
+        const row = payload.new;
+        if (row.chat_session_id !== session.id) return;
+        if (!["support_message","support_reply"].includes(row.action)) return;
+        const isReply = row.action === "support_reply";
+        setMessages(prev => {
+          if (prev.find(m => m.id === row.id)) return prev;
+          return [...prev, {
+            id:         row.id,
+            text:       row.metadata?.message || "",
+            sender:     isReply ? "support" : "user",
+            time:       row.created_at,
+            read:       open,
+            senderName: isReply
+              ? (row.metadata?.admin_name || "NkoAha Support")
+              : (row.metadata?.user_name || "You"),
+          }];
+        });
+      })
+      .on("postgres_changes", {
+        event: "UPDATE", schema: "public", table: "support_chats",
+        filter: `id=eq.${session.id}`,
+      }, (payload) => {
+        if (payload.new.status === "closed") {
+          setSession(prev => prev ? {
+            ...prev, status:"closed",
+            endedAt: payload.new.ended_at,
+            endedBy: payload.new.ended_by,
+          } : null);
+        }
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [userId, open]);
+  }, [userId, session?.id, open]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior:"smooth" });
   }, [messages]);
 
   async function sendMessage() {
-    if (!input.trim() || sending || !userId) return;
+    if (!input.trim() || sending || !userId || !session?.id || chatEnded) return;
     const text = input.trim();
     setInput("");
     setSending(true);
 
-    // Add to UI immediately
-    setMessages(prev => [...prev, {
-      id:     Date.now().toString(),
-      text,
-      sender: "user",
-      time:   new Date().toISOString(),
-      read:   true,
-    }]);
-
-    // ── Write directly to activity_logs — no edge function needed ──
-    // The admin SupportInboxPage listens to this table in realtime.
     const { error } = await supabase.from("activity_logs").insert({
-      user_id: userId,
-      action:  "support_message",
+      user_id:         userId,
+      action:          "support_message",
+      chat_session_id: session.id,
       metadata: {
         message:    text,
         from_email: userEmail,
@@ -152,104 +244,197 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
         user_role:  userRole,
         plan:       userPlan,
         sent_at:    new Date().toISOString(),
-        status:     "pending",
       },
     });
 
-    if (error) {
-      console.error("Support message failed:", error.message);
-    }
+    if (error) console.error("Send failed:", error.message);
 
-    // Also try edge function for email notification (non-blocking, best-effort)
+    // Best-effort email notification
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token) {
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      if (authSession?.access_token) {
         fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/support-message`, {
-          method:  "POST",
+          method: "POST",
           headers: {
             "Content-Type":  "application/json",
-            "Authorization": `Bearer ${session.access_token}`,
+            "Authorization": `Bearer ${authSession.access_token}`,
           },
           body: JSON.stringify({ userId, message: text, userEmail, userName }),
-        }).catch(() => {}); // Ignore if edge function not deployed
+        }).catch(() => {});
       }
     } catch (_) {}
 
-    // Confirmation
-    setTimeout(() => {
-      setMessages(prev => [...prev, {
-        id:     Date.now().toString(),
-        text:   `Got it! Our team will reply here and to ${userEmail || "your email"} shortly.`,
-        sender: "support",
-        time:   new Date().toISOString(),
-        read:   true,
-      }]);
-      setSending(false);
-    }, 600);
+    setSending(false);
+  }
+
+  async function endChat() {
+    if (!session?.id || !confirm("End this support chat?")) return;
+    await supabase.from("support_chats")
+      .update({ status:"closed", ended_at: new Date().toISOString(), ended_by:"user" })
+      .eq("id", session.id);
+    setSession(prev => prev ? { ...prev, status:"closed", endedBy:"user" } : null);
+  }
+
+  async function loadHistory() {
+    const { data } = await supabase
+      .from("support_chats")
+      .select("id,status,started_at,ended_at,ended_by")
+      .eq("user_id", userId)
+      .order("started_at",{ascending:false})
+      .limit(10);
+    setPastSessions((data||[]).map((d:any) => ({
+      id:d.id, status:d.status, startedAt:d.started_at,
+      endedAt:d.ended_at, endedBy:d.ended_by,
+    })));
+    setShowHistory(true);
   }
 
   function fmt(iso: string) {
-    return new Date(iso).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+    return new Date(iso).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+  }
+  function fmtDate(iso: string) {
+    return new Date(iso).toLocaleDateString([],{month:"short",day:"numeric",year:"numeric"});
   }
 
   return (
     <div className="sc-fab">
       {open && (
         <div className="sc-window">
+          {/* Header */}
           <div className="sc-header">
             <div className="sc-header-avatar">💬</div>
             <div className="sc-header-info">
               <div className="sc-header-name">NkoAha Support</div>
               <div className="sc-header-status">
                 <div className="sc-status-dot"/>
-                Live chat · Typically replies in ~2h
+                {chatEnded ? "Chat ended" : "Live chat · ~2h response"}
               </div>
             </div>
-            <button className="sc-close" onClick={() => setOpen(false)}>×</button>
+            <div className="sc-header-actions">
+              {session && !chatEnded && (
+                <button className="sc-end-btn" onClick={endChat} title="End chat">End</button>
+              )}
+              <button className="sc-close" onClick={() => setOpen(false)}>×</button>
+            </div>
           </div>
 
-          <div className="sc-messages">
-            {messages.map(m => (
-              <div key={m.id} style={{display:"flex",flexDirection:"column",
-                alignItems:m.sender==="user"?"flex-end":"flex-start"}}>
-                <div className={`sc-msg ${m.sender}${m.sender==="support"&&!m.read?" unread":""}`}>
-                  {m.text}
-                </div>
-                <div className="sc-msg-time"
-                  style={{alignSelf:m.sender==="user"?"flex-end":"flex-start"}}>
-                  {fmt(m.time)}
-                </div>
+          {/* No active session */}
+          {!session && !showHistory && (
+            <div className="sc-no-session">
+              <div style={{fontSize:36}}>💬</div>
+              <div style={{fontSize:14,fontWeight:600,color:"#1c1917"}}>Start a conversation</div>
+              <div style={{fontSize:12,color:"#78716c",textAlign:"center",maxWidth:220}}>
+                Our team typically replies within 2 hours
               </div>
-            ))}
-            <div ref={bottomRef}/>
-          </div>
+              <button className="sc-start-btn" onClick={startNewChat}>
+                Start New Chat
+              </button>
+            </div>
+          )}
 
-          <div className="sc-input-row">
-            <textarea
-              className="sc-input"
-              rows={1}
-              placeholder="Type your message…"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();} }}
-            />
-            <button className="sc-send" onClick={sendMessage}
-              disabled={sending || !input.trim() || !userId}>
-              {sending ? "…" : "Send"}
+          {/* Active chat messages */}
+          {session && !showHistory && (
+            <>
+              <div className="sc-messages">
+                {messages.map(m => (
+                  <div key={m.id} className={`sc-msg-group ${m.sender}`}>
+                    {m.senderName && (
+                      <div className="sc-msg-sender">{m.senderName}</div>
+                    )}
+                    <div className={`sc-msg ${m.sender}${m.sender==="support"&&!m.read?" unread":""}`}>
+                      {m.text}
+                    </div>
+                    <div className="sc-msg-time" style={{alignSelf:m.sender==="user"?"flex-end":"flex-start"}}>
+                      {fmt(m.time)}
+                    </div>
+                  </div>
+                ))}
+                <div ref={bottomRef}/>
+              </div>
+
+              {chatEnded ? (
+                <div className="sc-ended-banner">
+                  This chat was ended by {session.endedBy === "user" ? "you" : "our team"}.
+                  {session.endedAt && ` · ${fmtDate(session.endedAt)}`}
+                </div>
+              ) : (
+                <>
+                  <div className="sc-input-row">
+                    <textarea
+                      className="sc-input"
+                      rows={1}
+                      placeholder="Type your message…"
+                      value={input}
+                      onChange={e => setInput(e.target.value)}
+                      onKeyDown={e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();} }}
+                      disabled={chatEnded}
+                    />
+                    <button className="sc-send" onClick={sendMessage}
+                      disabled={sending||!input.trim()||chatEnded}>
+                      {sending?"…":"Send"}
+                    </button>
+                  </div>
+                  <div className="sc-notice">Replies appear here and in your email</div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* Chat history */}
+          {showHistory && (
+            <div style={{flex:1,overflow:"auto",padding:14}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+                <button onClick={()=>setShowHistory(false)}
+                  style={{background:"none",border:"none",color:"#7c3aed",cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>
+                  ← Back
+                </button>
+                <span style={{fontSize:13,fontWeight:600,color:"#1c1917"}}>Chat History</span>
+              </div>
+              {pastSessions.map(s => (
+                <div key={s.id}
+                  onClick={async () => {
+                    await loadMessages(s.id, userId);
+                    setSession(s);
+                    setShowHistory(false);
+                  }}
+                  style={{padding:"10px 12px",border:"1px solid #e7e4df",borderRadius:9,marginBottom:8,cursor:"pointer",background:"#faf9f8",transition:"background .12s"}}
+                  onMouseEnter={e=>(e.currentTarget.style.background="#ede9fe")}
+                  onMouseLeave={e=>(e.currentTarget.style.background="#faf9f8")}
+                >
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:12,fontWeight:600,color:"#1c1917"}}>{fmtDate(s.startedAt)}</span>
+                    <span style={{fontSize:10,padding:"1px 7px",borderRadius:20,fontWeight:700,
+                      background:s.status==="open"?"#dcfce7":"#f5f3ef",
+                      color:s.status==="open"?"#16a34a":"#78716c"}}>
+                      {s.status}
+                    </span>
+                  </div>
+                  {s.endedAt && (
+                    <div style={{fontSize:11,color:"#78716c",marginTop:2}}>
+                      Ended {fmtDate(s.endedAt)} by {s.endedBy}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {pastSessions.length === 0 && (
+                <div style={{textAlign:"center",color:"#a8a29e",fontSize:13,padding:20}}>No past chats</div>
+              )}
+            </div>
+          )}
+
+          {/* History button */}
+          {!showHistory && (
+            <button className="sc-history-btn" onClick={loadHistory}>
+              📋 View chat history
             </button>
-          </div>
-          <div className="sc-notice">Replies from our team will appear here</div>
+          )}
         </div>
       )}
 
-      <button
-        className={`sc-fab-btn ${open?"open":""}`}
-        onClick={() => setOpen(o => !o)}
-        title="Support"
-      >
+      <button className={`sc-fab-btn ${open?"open":""}`} onClick={()=>setOpen(o=>!o)} title="Support">
         {open ? "×" : "💬"}
         {!open && unreadCount > 0 && (
-          <span className="sc-fab-badge">{unreadCount > 9 ? "9+" : unreadCount}</span>
+          <span className="sc-fab-badge">{unreadCount>9?"9+":unreadCount}</span>
         )}
       </button>
     </div>
