@@ -6,7 +6,7 @@ const STYLES = `
   .sc-fab-btn{width:52px;height:52px;border-radius:50%;background:#7c3aed;color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 20px rgba(124,58,237,.45);transition:all .2s;font-size:22px;position:relative}
   .sc-fab-btn:hover{background:#6d28d9;transform:scale(1.07)}
   .sc-fab-btn.open{background:#1c1917}
-  .sc-fab-badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;border-radius:20px;background:#dc2626;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;font-family:monospace;pointer-events:none;border:2px solid #fff}
+  .sc-fab-badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;border-radius:20px;background:#dc2626;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;pointer-events:none;border:2px solid #fff}
   .sc-window{width:340px;background:#fff;border-radius:18px;box-shadow:0 16px 56px rgba(0,0,0,.18);border:1px solid #e7e4df;overflow:hidden;animation:sc-in .2s ease;display:flex;flex-direction:column;max-height:520px}
   @keyframes sc-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
   .sc-header{background:linear-gradient(135deg,#7c3aed,#6d28d9);padding:16px 18px;display:flex;align-items:center;gap:10px;flex-shrink:0}
@@ -53,34 +53,50 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
   const [userId, setUserId]     = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [userName, setUserName]   = useState("");
+  const [userRole, setUserRole]   = useState("");
+  const [userPlan, setUserPlan]   = useState("Free");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Unread count = support messages the user hasn't seen yet (chat was closed)
   const unreadCount = messages.filter(m => m.sender === "support" && !m.read).length;
 
-  // Load user on mount
+  // Load user info + plan on mount
   useEffect(() => {
     const id = "sc-styles";
     if (!document.getElementById(id)) {
       const el = document.createElement("style"); el.id=id; el.textContent=STYLES;
       document.head.appendChild(el);
     }
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) return;
       setUserId(user.id);
       setUserEmail(user.email || "");
       setUserName(user.email?.split("@")[0] || "");
+
+      // Fetch role and plan for admin inbox context
+      const { data: profile } = await supabase
+        .from("profiles").select("role").eq("id", user.id).single();
+      setUserRole(profile?.role || "individual");
+
+      const { data: sub } = await supabase
+        .from("subscriptions").select("plan_id")
+        .eq("user_id", user.id).eq("status","active")
+        .order("created_at",{ascending:false}).limit(1).maybeSingle();
+
+      const plan = sub?.plan_id || "free";
+      setUserPlan(
+        plan === "free" ? "Free" :
+        plan.replace("org_","Org ").replace("ind_","Ind ")
+          .replace(/_/g," ").replace(/\b\w/g, c => c.toUpperCase())
+      );
     });
   }, []);
 
-  // Mark all support messages as read when chat is opened
+  // Mark all as read when chat opens
   useEffect(() => {
-    if (open) {
-      setMessages(prev => prev.map(m => ({ ...m, read: true })));
-    }
+    if (open) setMessages(prev => prev.map(m => ({ ...m, read: true })));
   }, [open]);
 
-  // Realtime: listen for support_reply rows in activity_logs
+  // Realtime: listen for support_reply rows → show in chat
   useEffect(() => {
     if (!userId) return;
     const channel = supabase
@@ -98,7 +114,7 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
           text:   meta.message || "",
           sender: "support",
           time:   meta.sent_at || new Date().toISOString(),
-          read:   open, // mark read immediately if chat is already open
+          read:   open,
         }]);
       })
       .subscribe();
@@ -110,11 +126,12 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
   }, [messages]);
 
   async function sendMessage() {
-    if (!input.trim() || sending) return;
+    if (!input.trim() || sending || !userId) return;
     const text = input.trim();
     setInput("");
     setSending(true);
 
+    // Add to UI immediately
     setMessages(prev => [...prev, {
       id:     Date.now().toString(),
       text,
@@ -123,30 +140,52 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
       read:   true,
     }]);
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/support-message`, {
-        method:  "POST",
-        headers: {
-          "Content-Type":  "application/json",
-          "Authorization": `Bearer ${session?.access_token || ""}`,
-        },
-        body: JSON.stringify({ userId, message: text, userEmail, userName }),
-      });
-    } catch (e) {
-      console.error("Support message failed:", e);
+    // ── Write directly to activity_logs — no edge function needed ──
+    // The admin SupportInboxPage listens to this table in realtime.
+    const { error } = await supabase.from("activity_logs").insert({
+      user_id: userId,
+      action:  "support_message",
+      metadata: {
+        message:    text,
+        from_email: userEmail,
+        user_name:  userName,
+        user_role:  userRole,
+        plan:       userPlan,
+        sent_at:    new Date().toISOString(),
+        status:     "pending",
+      },
+    });
+
+    if (error) {
+      console.error("Support message failed:", error.message);
     }
 
+    // Also try edge function for email notification (non-blocking, best-effort)
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/support-message`, {
+          method:  "POST",
+          headers: {
+            "Content-Type":  "application/json",
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ userId, message: text, userEmail, userName }),
+        }).catch(() => {}); // Ignore if edge function not deployed
+      }
+    } catch (_) {}
+
+    // Confirmation
     setTimeout(() => {
       setMessages(prev => [...prev, {
         id:     Date.now().toString(),
-        text:   `Got it! We'll reply to ${userEmail || "your email"} and it'll appear here too. Typical response time is under 2 hours.`,
+        text:   `Got it! Our team will reply here and to ${userEmail || "your email"} shortly.`,
         sender: "support",
         time:   new Date().toISOString(),
-        read:   true, // auto-confirmation is immediately read
+        read:   true,
       }]);
       setSending(false);
-    }, 800);
+    }, 600);
   }
 
   function fmt(iso: string) {
@@ -171,11 +210,13 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
 
           <div className="sc-messages">
             {messages.map(m => (
-              <div key={m.id} style={{display:"flex",flexDirection:"column",alignItems:m.sender==="user"?"flex-end":"flex-start"}}>
+              <div key={m.id} style={{display:"flex",flexDirection:"column",
+                alignItems:m.sender==="user"?"flex-end":"flex-start"}}>
                 <div className={`sc-msg ${m.sender}${m.sender==="support"&&!m.read?" unread":""}`}>
                   {m.text}
                 </div>
-                <div className="sc-msg-time" style={{alignSelf:m.sender==="user"?"flex-end":"flex-start"}}>
+                <div className="sc-msg-time"
+                  style={{alignSelf:m.sender==="user"?"flex-end":"flex-start"}}>
                   {fmt(m.time)}
                 </div>
               </div>
@@ -192,7 +233,8 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();} }}
             />
-            <button className="sc-send" onClick={sendMessage} disabled={sending||!input.trim()}>
+            <button className="sc-send" onClick={sendMessage}
+              disabled={sending || !input.trim() || !userId}>
               {sending ? "…" : "Send"}
             </button>
           </div>
@@ -200,7 +242,6 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
         </div>
       )}
 
-      {/* FAB button with unread badge */}
       <button
         className={`sc-fab-btn ${open?"open":""}`}
         onClick={() => setOpen(o => !o)}
