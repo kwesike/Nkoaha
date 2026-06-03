@@ -78,22 +78,17 @@ export default function JoinOrg() {
     orgId: string, token: string, name: string
   ) {
     try {
-      // Verify invite — RLS must allow authenticated users to read by token
-      const { data: invite, error: inviteErr } = await supabase
+      // Verify invite
+      const { data: invite } = await supabase
         .from("organization_invites")
         .select("id,status,invite_token,expires_at")
         .eq("invite_token", token)
         .eq("organization_id", orgId)
-        .maybeSingle();
+        .single();
 
-      if (inviteErr) {
-        setStatus("error");
-        setMessage(`Could not verify invite: ${inviteErr.message}. Please ask the admin to resend.`);
-        return;
-      }
       if (!invite) {
         setStatus("error");
-        setMessage("Invite not found or already used. Please ask the admin to resend a fresh invite link.");
+        setMessage("Invite not found or already used. Please ask the admin to resend.");
         return;
       }
 
