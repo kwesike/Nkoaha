@@ -19,13 +19,13 @@ const ORG_PLANS = [
   {
     id: "org_starter", name: "Starter", members: "Up to 10 members",
     monthly: 105000, yearly: 595000,
-    features: ["Up to 10 team members","100 documents/month","Full routing chains","1 partnership max","Audit log"],
+    features: ["Up to 10 team members","100 documents/month","Full routing chains","1 partnership max","Audit log","Email support"],
     color: "#7c3aed", bg: "#ede9fe",
   },
   {
     id: "org_growth", name: "Growth", members: "Up to 50 members",
     monthly: 395000, yearly: 855000,
-    features: ["Up to 50 team members","500 documents/month","Everything in Starter","Unlimited partnerships","Priority support + live chat"],
+    features: ["Up to 50 team members","500 documents/month","Everything in Starter","Unlimited partnerships","Priority support + live chat","Advanced audit logs"],
     color: "#2563eb", bg: "#dbeafe",
     popular: true,
   },
@@ -175,11 +175,16 @@ export default function BillingPage() {
       }
     }
 
-    // Fetch active subscription — auto-expire if past expiry date
+        // Fetch active subscription — filter by plan_type so org users never see
+    // individual plans and individual users never see org plans
+    const planType = (profile?.role === "organization" || profile?.role === "organization_member")
+      ? "organization" : "individual";
+
     const { data: sub } = await supabase.from("subscriptions")
-      .select("plan_id,status,expires_at,member_limit,doc_quota,partner_limit,org_doc_limit")
+      .select("plan_id,status,expires_at,member_limit,doc_quota,partner_limit,org_doc_limit,plan_type")
       .eq("user_id", user.id)
       .eq("status", "active")
+      .eq("plan_type", planType)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
