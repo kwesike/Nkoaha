@@ -103,11 +103,25 @@ export default function OrgMembersPage() {
     const accepted: Member[] = (profRes.data || []).map((m: any) => ({
       id: m.id, email: m.email, status: m.status || "active",
     }));
+
+    // Case-insensitive dedup: if someone already exists as a member (profile),
+    // never show them as pending even if a stale invite row lingers.
+    const acceptedEmails = new Set(accepted.map(a => a.email.toLowerCase()));
     const pending: Member[] = (invRes.data || [])
-      .filter((inv: any) => !accepted.find(a => a.email === inv.email))
+      .filter((inv: any) => !acceptedEmails.has((inv.email || "").toLowerCase()))
       .map((inv: any) => ({ id: inv.id, email: inv.email, status: "pending", isPending: true }));
 
     setMembers([...accepted, ...pending]);
+
+    // Self-heal: mark any lingering "pending" invites as accepted if that
+    // person is already a member (their profile is in the org).
+    const staleInvites = (invRes.data || [])
+      .filter((inv: any) => acceptedEmails.has((inv.email || "").toLowerCase()));
+    if (staleInvites.length > 0) {
+      await supabase.from("organization_invites")
+        .update({ status: "accepted" })
+        .in("id", staleInvites.map((i: any) => i.id));
+    }
 
     // Fetch real plan limit from subscriptions
     const { data: sub } = await supabase.from("subscriptions")

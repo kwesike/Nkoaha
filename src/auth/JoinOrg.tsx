@@ -44,8 +44,6 @@ export default function JoinOrg() {
     );
 
     // ── Strategy 2: poll getSession every 500ms for up to 10s ──
-    // Supabase v2 processes the #access_token hash asynchronously.
-    // getSession() returns null until it's done — polling catches it reliably.
     let attempts = 0;
     const poll = setInterval(async () => {
       if (handled) { clearInterval(poll); return; }
@@ -55,7 +53,7 @@ export default function JoinOrg() {
         clearInterval(poll);
         await tryJoin(data.session.user.id, data.session.user.email || email);
       }
-      if (attempts >= 20) { // 10 seconds
+      if (attempts >= 20) {
         clearInterval(poll);
         if (!handled) {
           setStatus("error");
@@ -78,32 +76,22 @@ export default function JoinOrg() {
     orgId: string, token: string, name: string
   ) {
     try {
-      // Verify invite
-      const { data: invite } = await supabase
+      // ── Verify invite. RLS must allow authenticated users to read by token. ──
+      const { data: invite, error: inviteErr } = await supabase
         .from("organization_invites")
         .select("id,status,invite_token,expires_at")
         .eq("invite_token", token)
         .eq("organization_id", orgId)
-        .single();
+        .maybeSingle();
 
-      if (!invite) {
+      if (inviteErr) {
         setStatus("error");
-        setMessage("Invite not found or already used. Please ask the admin to resend.");
+        setMessage(`Could not verify invite: ${inviteErr.message}. Please ask the admin to resend.`);
         return;
       }
-
-      if (invite.status === "accepted") {
-        // Already a member — check MFA and redirect
-        localStorage.setItem("nkoaha_role", "organization_member");
-        localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
-        setStatus("done");
-        setMessage(`You are already a member of ${name}.`);
-        const { data: factors } = await supabase.auth.mfa.listFactors();
-        const hasMFA = factors?.totp?.some((f: any) => f.status === "verified");
-        setTimeout(() => navigate(
-          hasMFA ? "/dashboard/organizationmembersdashboard" : "/mfa-setup",
-          { state: { destination: "/dashboard/organizationmembersdashboard" } }
-        ), 2000);
+      if (!invite) {
+        setStatus("error");
+        setMessage("Invite not found or already used. Please ask the admin to resend a fresh invite link.");
         return;
       }
 
@@ -113,42 +101,65 @@ export default function JoinOrg() {
         return;
       }
 
-      // Add to org
+      // ── Add the user to the org (set organization_id + role) ──
       const { error: profileErr } = await supabase
         .from("profiles")
         .update({ organization_id: orgId, role: "organization_member" })
         .eq("id", userId);
 
       if (profileErr) {
-        await supabase.from("profiles").upsert({
+        // Profile row may not exist yet — upsert it
+        const { error: upsertErr } = await supabase.from("profiles").upsert({
           id: userId, email: userEmail,
           role: "organization_member", organization_id: orgId,
         });
+        if (upsertErr) {
+          setStatus("error");
+          setMessage(`Could not add you to the organisation: ${upsertErr.message}`);
+          return;
+        }
       }
 
-      // Mark accepted
-      await supabase.from("organization_invites")
+      // ── Mark invite accepted (do this AFTER profile is updated) ──
+      const { error: acceptErr } = await supabase.from("organization_invites")
         .update({ status: "accepted" })
         .eq("id", invite.id);
+      if (acceptErr) {
+        // Non-fatal — OrgMembersPage self-heals stale invites — but log it
+        console.warn("Could not mark invite accepted:", acceptErr.message);
+      }
 
-      // Notify owner
+      // ── Notify owner ──
       const { data: org } = await supabase
         .from("organizations").select("owner_id,name").eq("id", orgId).single();
       if (org?.owner_id) {
         await supabase.from("activity_logs").insert({
           user_id: org.owner_id,
           action: "member_joined",
-          metadata: { member_email: userEmail, organization_name: org.name, status: "pending" },
+          metadata: { member_email: userEmail, organization_name: org.name },
         });
       }
 
       localStorage.setItem("nkoaha_role", "organization_member");
       localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
 
+      // If already accepted earlier, just route them in
+      if (invite.status === "accepted") {
+        setStatus("done");
+        setMessage(`You are already a member of ${name}.`);
+        const { data: factors } = await supabase.auth.mfa.listFactors();
+        const hasMFA = factors?.totp?.some((f: any) => f.status === "verified");
+        setTimeout(() => navigate(
+          hasMFA ? "/dashboard/organizationmembersdashboard" : "/mfa-setup",
+          { state: { destination: "/dashboard/organizationmembersdashboard" } }
+        ), 1500);
+        return;
+      }
+
       setStatus("done");
       setMessage(`Welcome to ${name}! Setting up your account…`);
 
-      // → Password setup → MFA setup → member dashboard
+      // → MFA setup → member dashboard
       setTimeout(() => navigate("/mfa-setup", {
         state: { destination: "/dashboard/organizationmembersdashboard" }
       }), 1500);

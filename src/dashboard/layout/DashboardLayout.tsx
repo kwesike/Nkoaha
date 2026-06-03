@@ -117,11 +117,19 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   // ── Realtime inbox listener — show local notification on new activity ──
   useEffect(() => {
     if (!ready) return;
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
 
-      const channel = supabase
-        .channel(`inbox-notify-${user.id}`)
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+
+      // Unique channel name per mount avoids "callbacks after subscribe()"
+      // when React Strict Mode mounts the effect twice.
+      const channelName = `inbox-notify-${user.id}-${Date.now()}`;
+
+      channel = supabase
+        .channel(channelName)
         .on("postgres_changes", {
           event:  "INSERT",
           schema: "public",
@@ -148,11 +156,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
           const msg = msgMap[action];
           if (msg) showLocalNotification(msg.t, msg.b, "/dashboard");
-        })
-        .subscribe();
+        });
 
-      return () => { supabase.removeChannel(channel); };
-    });
+      // Only subscribe if this effect instance is still active
+      if (!cancelled) channel.subscribe();
+    })();
+
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
   }, [ready]);
 
   const logout = async () => {
