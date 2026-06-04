@@ -179,6 +179,7 @@ export default function SettingsPage() {
   const [avatarUrl, setAvatarUrl] = useState("");
   const [sigUrl, setSigUrl]       = useState("");
   const [uploading, setUploading] = useState<"avatar"|"sig"|null>(null);
+  const [userRole, setUserRole]   = useState<string>("");
 
   useEffect(() => {
     const id = "st-styles";
@@ -193,6 +194,7 @@ export default function SettingsPage() {
     const { data: { user } } = await supabase.auth.getUser(); if (!user) return;
     const { data: p } = await supabase.from("profiles").select("*").eq("id", user.id).single();
     setEmail(p?.email||user.email||""); setPhone(p?.phone||"");
+    setUserRole(p?.role||"individual");
     if (p?.avatar_url) setAvatarUrl(p.avatar_url);
     if (p?.signature_url) setSigUrl(p.signature_url);
     const { data: o } = await supabase.from("organizations").select("*").eq("owner_id", user.id).maybeSingle();
@@ -435,8 +437,17 @@ export default function SettingsPage() {
           <div className="st-row">
             <div className="st-row-label">Delete Account</div>
             <div className="st-row-value">
-              <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:10}}>Permanently delete your account and all associated data. This cannot be undone.</div>
-              <button className="st-btn st-btn-danger" onClick={()=>alert("To delete your account, contact support@nkoaha.com")}>Delete My Account</button>
+              {userRole === "organization_member" ? (
+                <div style={{fontSize:12.5,color:"var(--muted)",lineHeight:1.6,background:"#faf9f8",border:"1px solid var(--border)",borderRadius:9,padding:"12px 14px"}}>
+                  🔒 Account deletion is unavailable while you are a member of an organisation.
+                  Your organisation administrator manages your membership. If you wish to delete
+                  your account, ask your organisation to remove you as a member first — once you
+                  are an individual user again, this option will return here.
+                </div>
+              ) : (<>
+                <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:10}}>Permanently delete your account and all associated data. This cannot be undone.</div>
+                <button className="st-btn st-btn-danger" onClick={()=>alert("To delete your account, contact support@nkoaha.com")}>Delete My Account</button>
+              </>)}
             </div>
           </div>
         </div>

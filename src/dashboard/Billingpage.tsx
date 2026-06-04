@@ -3,7 +3,7 @@ import { supabase } from ".././lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 /* ─── Currency conversion (approximate rates) ─── */
-const NGN_TO_USD = 0.00063; // 1 NGN ≈ 0.00063 USD
+const NGN_TO_USD = 0.00073; // 1 NGN ≈ 0.00073 USD
 const NGN_TO_EUR = 0.00058;
 type Currency = "NGN" | "USD" | "EUR";
 type BillingPeriod = "monthly" | "yearly";
@@ -18,20 +18,20 @@ function fmt(ngn: number, currency: Currency): string {
 const ORG_PLANS = [
   {
     id: "org_starter", name: "Starter", members: "Up to 10 members",
-    monthly: 195000, yearly: 995000,
+    monthly: 195000, yearly: 1638000,
     features: ["Up to 10 team members","100 documents/month","Full routing chains","1 partnership max","Audit log","Email support"],
     color: "#7c3aed", bg: "#ede9fe",
   },
   {
     id: "org_growth", name: "Growth", members: "Up to 50 members",
-    monthly: 395000, yearly: 1055000,
-    features: ["Up to 50 team members","500 documents/month","Everything in Starter","Unlimited partnerships","Priority support + live chat"],
+    monthly: 395000, yearly: 3318000,
+    features: ["Up to 50 team members","500 documents/month","Everything in Starter","Unlimited partnerships","Priority support + live chat","Advanced audit logs"],
     color: "#2563eb", bg: "#dbeafe",
     popular: true,
   },
   {
     id: "org_enterprise", name: "Enterprise", members: "Unlimited members",
-    monthly: 595000, yearly: 2300000,
+    monthly: 595000, yearly: 4950000,
     features: ["Unlimited documents/month","Unlimited team members","Everything in Growth","Dedicated account manager","Custom onboarding"],
     color: "#b45309", bg: "#fef9c3",
   },
@@ -335,7 +335,7 @@ export default function BillingPage() {
 
   const freeUsage = role === "individual"
     ? "2 free document uploads, routings and inbox receives per day"
-    : "2 free trial document uploads, routings and inbox receives (one-time)";
+    : "5 free trial document actions shared across your whole organisation (one-time)";
 
   return (
     <DashboardLayout>
@@ -406,7 +406,7 @@ export default function BillingPage() {
               <button className={`bl-period-btn${period==="monthly"?" active":""}`} onClick={()=>setPeriod("monthly")}>Monthly</button>
               <button className={`bl-period-btn${period==="yearly"?" active":""}`} onClick={()=>setPeriod("yearly")}>
                 Yearly
-                <span className="bl-save-chip">Save 67%</span>
+                <span className="bl-save-chip">Save 30%</span>
               </button>
             </div>
           )}
@@ -482,7 +482,7 @@ export default function BillingPage() {
                 <li>All payments are processed securely through <strong>Flutterwave</strong>.</li>
               </ul>
             : <ul style={{paddingLeft:18,margin:0,display:"flex",flexDirection:"column",gap:6,fontSize:12.5,color:"var(--muted)"}}>
-                <li>Your organisation gets a <strong>one-time free trial</strong> of 2 document actions.</li>
+                <li>Your organisation gets a <strong>one-time free trial of 5 document actions</strong>, shared across the organisation and all its members combined.</li>
                 <li>Plans are based on the number of members in your organisation.</li>
                 <li><strong>Document allowance resets monthly</strong> — e.g. Starter gets 100 new documents every month for the duration of the plan.</li>
                 <li>Yearly plans offer significant savings vs monthly billing.</li>
