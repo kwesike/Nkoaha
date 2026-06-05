@@ -38,10 +38,8 @@ const ORG_PLANS = [
 ];
 
 const IND_PLANS = [
-  { id: "ind_daily",   name: "Daily",   docs: "10 documents",  price: 3500,  period: "per day",   color: "#0d9488", bg: "#ccfbf1" },
-  { id: "ind_weekly",  name: "Weekly",  docs: "30 documents",  price: 10000, period: "per week",  color: "#7c3aed", bg: "#ede9fe" },
-  { id: "ind_monthly", name: "Monthly", docs: "50 documents",  price: 25000, period: "per month", color: "#2563eb", bg: "#dbeafe", popular: true },
-  { id: "ind_yearly",  name: "Yearly",  docs: "Unlimited docs", price: 85000, period: "per year",  color: "#b45309", bg: "#fef9c3" },
+  { id: "ind_monthly", name: "Monthly", docs: "50 documents",  price: 18000,  period: "per month", color: "#2563eb", bg: "#dbeafe", popular: true },
+  { id: "ind_yearly",  name: "Yearly",  docs: "Unlimited docs", price: 175000, period: "per year",  color: "#b45309", bg: "#fef9c3" },
 ];
 
 const STYLES = `
@@ -274,7 +272,7 @@ export default function BillingPage() {
       org_starter: 10, org_growth: 50, org_enterprise: null,
     };
     const docQuotaMap: Record<string,number|null> = {
-      ind_daily: 10, ind_weekly: 30, ind_monthly: 50, ind_yearly: null,
+      ind_monthly: 50, ind_yearly: null,
     };
     // Partnership limit per org plan: Starter=1, Growth=unlimited, Enterprise=unlimited
     const partnerLimitMap: Record<string,number|null> = {
@@ -455,7 +453,7 @@ export default function BillingPage() {
                 onClick={()=>setSelectedPlan(plan)}>
                 {(plan as any).popular && <div className="bl-popular-chip">Best Value</div>}
                 <div className="bl-ind-icon" style={{background:plan.bg}}>
-                  {plan.id==="ind_daily"?"📅":plan.id==="ind_weekly"?"📆":plan.id==="ind_monthly"?"🗓️":"♾️"}
+                  {plan.id==="ind_monthly"?"🗓️":"♾️"}
                 </div>
                 <div className="bl-ind-name">{plan.name}</div>
                 <div className="bl-ind-docs" style={{color:plan.color}}>{plan.docs}</div>

@@ -1584,8 +1584,12 @@ export default function DocumentsPage() {
         }
       }
 
-      // Individuals → everyone
-      const{data}=await supabase.from("profiles").select("id,email,role,organization_id").neq("id",user.id);
+      // Individuals → other individuals + organisation owners only
+      // (not internal members of orgs the user doesn't belong to)
+      const{data}=await supabase.from("profiles")
+        .select("id,email,role,organization_id")
+        .neq("id",user.id)
+        .in("role",["individual","organization"]);
       return data||[];
     };
 
@@ -2012,8 +2016,10 @@ export default function DocumentsPage() {
       frame.contentWindow?.print();
       setTimeout(()=>{ try{document.body.removeChild(frame);}catch(e){} },2000);
     },500);
-    // If final approver has completed, remove doc from list after print
-    if(myRoute?.status==="completed"&&myRoute?.is_final){
+    // Only the FINAL RECIPIENT's copy disappears after print.
+    // Owners/initiators have no myRoute, so this never fires for them —
+    // their original document always stays in their list.
+    if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
       setTimeout(()=>{
         setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
         setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
@@ -2069,8 +2075,10 @@ export default function DocumentsPage() {
       document.body.removeChild(a);
     }
     setTimeout(()=>URL.revokeObjectURL(url),30000);
-    // If final approver has completed, remove doc from list after download
-    if(myRoute?.status==="completed"&&myRoute?.is_final){
+    // Only the FINAL RECIPIENT's copy disappears after download.
+    // Owners/initiators have no myRoute, so this never fires for them —
+    // their original document always stays in their list.
+    if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
       setTimeout(()=>{
         setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
         setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
@@ -2352,8 +2360,23 @@ export default function DocumentsPage() {
                   {myRoute.status==="declined"?"✗ Declined":"✓ Actioned"}
                 </span>
               ) : (
-                // Owner/sender: show Route button
-                !(activeDoc as any).isShared && <button className="dp-btn dp-btn-ghost" onClick={openRoutingModal}><Ico.Route/> Route</button>
+                // Owner/initiator: Route + Download + Print.
+                // Unlike the final recipient, the owner's document is NEVER
+                // removed after download/print — it's their original and stays.
+                !(activeDoc as any).isShared && (
+                  <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+                    <button className="dp-btn dp-btn-ghost" onClick={openRoutingModal}><Ico.Route/> Route</button>
+                    <div style={{width:1,height:20,background:"var(--border)",flexShrink:0,margin:"0 2px"}}/>
+                    <button className="dp-btn dp-btn-ghost" onClick={handleDownloadDoc} title="Download as PDF">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      Download
+                    </button>
+                    <button className="dp-btn dp-btn-ghost" onClick={handlePrintDoc} title="Print document">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                      Print
+                    </button>
+                  </div>
+                )
               )}
               {avatarUrl&&<img src={avatarUrl} alt="avatar" crossOrigin="anonymous" style={{width:30,height:30,borderRadius:"50%",objectFit:"cover",flexShrink:0,border:"2px solid var(--accent-light)"}}/>}
             </>
