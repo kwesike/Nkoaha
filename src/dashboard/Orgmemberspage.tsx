@@ -145,14 +145,23 @@ export default function OrgMembersPage() {
       const { error } = await supabase.from("organization_invites").delete().eq("id", m.id);
       if (error) { alert("Failed to cancel invite: " + error.message); return; }
     } else {
-      // Step 1: clear profile
-      const { error } = await supabase.from("profiles")
+      // Step 1: clear profile — select the row back so we can confirm the
+      // update actually changed something. If RLS blocks it, data is empty
+      // (no error is thrown), which is the silent-failure case we must catch.
+      const { data: updated, error } = await supabase.from("profiles")
         .update({ organization_id: null, role: "individual" })
         .eq("id", m.id)
-        .eq("organization_id", orgId);
+        .eq("organization_id", orgId)
+        .select("id,organization_id,role");
       if (error) {
         console.error("Remove member error:", error);
         alert("Could not remove member: " + error.message);
+        return;
+      }
+      if (!updated || updated.length === 0) {
+        // Update was blocked or matched no row — almost always RLS.
+        console.error("Remove member: update affected 0 rows (likely RLS).", { memberId: m.id, orgId });
+        alert("Could not remove this member. The change was blocked by a permissions policy. Please run the latest remove-member SQL fix, then try again.");
         return;
       }
       // Step 2: delete any invite row so they don't reappear as "pending"
