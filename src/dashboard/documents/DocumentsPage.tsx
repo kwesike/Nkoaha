@@ -195,6 +195,26 @@ async function logActivity(action: string, docId: string, title: string, userId?
   await supabase.from("activity_logs").insert({ user_id: userId, action, document_id: docId, metadata: { title } });
 }
 
+async function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = () => resolve(); s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function loadJsPdf(): Promise<any> {
+  if ((window as any).jspdf && (window as any).html2canvas) return (window as any).jspdf;
+  // html2canvas must load first — jsPDF.html() depends on it being on window
+  if (!(window as any).html2canvas) {
+    await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+  }
+  if (!(window as any).jspdf) {
+    await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  }
+  return (window as any).jspdf;
+}
+
 async function loadPdfJs(): Promise<any> {
   if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
   return new Promise((resolve, reject) => {
@@ -467,6 +487,12 @@ export default function DocumentsPage() {
   const [avatarUrl, setAvatarUrl]     = useState("");
   const [contextPos, setContextPos]   = useState<{x:number;y:number}|null>(null);
   const [showRouteModal, setShowRouteModal] = useState(false);
+  // Send-directly-to-email feature
+  const [showEmailSend, setShowEmailSend] = useState(false);
+  const [emailTo, setEmailTo]             = useState("");
+  const [emailNote, setEmailNote]         = useState("");
+  const [emailSending, setEmailSending]   = useState(false);
+  const [emailMsg, setEmailMsg]           = useState<{type:"success"|"error";text:string}|null>(null);
   const [users, setUsers]             = useState<any[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<string[]>([]); // ordered list of user IDs
   const [currentOrgId, setCurrentOrgId]     = useState<string|null>(null);
@@ -1865,6 +1891,126 @@ export default function DocumentsPage() {
     alert("Document approved and signed. Your Proof certificate has been issued to your inbox.\n\nYou can now Download or Print the document — it will be removed from your list after you do.");
   };
 
+  /* ── Build a single PDF (base64) from the baked page images, for emailing ── */
+  const bakePagesToPdfBase64=async():Promise<string|null>=>{
+    const pages=await bakePages();
+    if(!pages.length) return null;
+
+    const jspdf=await loadJsPdf();
+    const { jsPDF }=jspdf;
+
+    // ── NEW (editor) documents: render the HTML into the PDF directly ──
+    if(pages[0].startsWith("__new__:")){
+      const html=pages[0].slice(8); // strip "__new__:"
+      // Build an off-screen container styled like a document page so jsPDF.html
+      // lays it out at the right width (A4 ≈ 794px CSS at 96dpi).
+      const holder=document.createElement("div");
+      holder.style.cssText="position:fixed;left:-99999px;top:0;width:794px;background:#fff;"+
+        "padding:48px 64px;font-family:'Times New Roman',Georgia,serif;font-size:12pt;line-height:1.6;color:#000;box-sizing:border-box;";
+      holder.innerHTML=html;
+      document.body.appendChild(holder);
+      const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
+      try{
+        await pdf.html(holder,{
+          autoPaging:"text",
+          margin:[24,24,24,24],
+          html2canvas:{ scale:0.72, useCORS:true, backgroundColor:"#ffffff" },
+          width:547,             // content width in pt (A4 width 595 - margins)
+          windowWidth:794,       // matches holder width so layout is consistent
+        });
+      }finally{
+        document.body.removeChild(holder);
+      }
+      const dataUri0=pdf.output("datauristring");
+      return dataUri0.split(",")[1]||"";
+    }
+
+    // A4 portrait in pt: 595.28 x 841.89
+    const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
+    const pageW=pdf.internal.pageSize.getWidth();
+    const pageH=pdf.internal.pageSize.getHeight();
+
+    for(let i=0;i<pages.length;i++){
+      const dataUrl=pages[i];
+      // Each baked page is an image at 816px-wide canvas; fit to A4 width,
+      // preserving aspect ratio.
+      const img=new Image();
+      await new Promise<void>(res=>{ img.onload=()=>res(); img.onerror=()=>res(); img.src=dataUrl; });
+      const ar=(img.naturalHeight||1056)/(img.naturalWidth||816);
+      const drawW=pageW;
+      const drawH=drawW*ar;
+      if(i>0) pdf.addPage();
+      // If the page is taller than A4, scale to fit height instead
+      if(drawH>pageH){
+        const h=pageH; const w=h/ar;
+        pdf.addImage(dataUrl,"JPEG",(pageW-w)/2,0,w,h);
+      }else{
+        pdf.addImage(dataUrl,"JPEG",0,0,drawW,drawH);
+      }
+    }
+
+    // Return base64 without the data: prefix (Resend wants raw base64)
+    const dataUri=pdf.output("datauristring"); // data:application/pdf;base64,XXXX
+    const base64=dataUri.split(",")[1]||"";
+    return base64;
+  };
+
+  /* ── Send the active document directly to an email address ── */
+  const sendDocumentToEmail=async()=>{
+    setEmailMsg(null);
+    const to=emailTo.trim().toLowerCase();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)){
+      setEmailMsg({type:"error",text:"Please enter a valid email address."});
+      return;
+    }
+    if(!activeDoc){ setEmailMsg({type:"error",text:"No document open."}); return; }
+    setEmailSending(true);
+    try{
+      const pdfBase64=await bakePagesToPdfBase64();
+      if(!pdfBase64){
+        setEmailMsg({type:"error",text:"Document not ready. Scroll through all pages, then try again."});
+        setEmailSending(false); return;
+      }
+
+      const{data:{user}}=await supabase.auth.getUser();
+      const{data:prof}=user?await supabase.from("profiles").select("email").eq("id",user.id).single():{data:null};
+      const senderName=(prof?.email||user?.email||"A NkoAha user").split("@")[0];
+      const senderEmail=prof?.email||user?.email||"";
+
+      const{data,error}=await supabase.functions.invoke("send-document-email",{
+        body:{
+          to,
+          senderName,
+          senderEmail,
+          documentTitle:docTitle||activeDoc.title||"Document",
+          message:emailNote.trim()||undefined,
+          pdfBase64,
+        },
+      });
+      if(error||(data&&(data as any).error)){
+        const detail=(data as any)?.detail||(data as any)?.error||error?.message||"Unknown error";
+        setEmailMsg({type:"error",text:"Could not send: "+detail});
+        setEmailSending(false); return;
+      }
+
+      // Log the send for the audit trail
+      if(user){
+        await supabase.from("activity_logs").insert({
+          user_id:user.id, action:"document_emailed", document_id:activeDoc.id,
+          metadata:{ document_title:docTitle, sent_to:to, status:"sent" },
+        });
+      }
+
+      setEmailMsg({type:"success",text:`Sent to ${to}. The PDF is attached and they've been invited to join NkoAha.`});
+      setEmailTo(""); setEmailNote("");
+      setEmailSending(false);
+      setTimeout(()=>{ setShowEmailSend(false); setEmailMsg(null); },2200);
+    }catch(e:any){
+      setEmailMsg({type:"error",text:"Failed: "+(e?.message||String(e))});
+      setEmailSending(false);
+    }
+  };
+
   /* ── Bake page canvases + overlays into JPEG data URLs ── */
   // ── Precise bake: measures actual rendered DOM geometry so print/download
   // output matches the screen exactly — correct font, padding, border,
@@ -2825,10 +2971,74 @@ export default function DocumentsPage() {
               )}
             </div>
 
+            {/* Send directly to an email address (off-platform recipient) */}
+            <div style={{marginTop:14,paddingTop:14,borderTop:"1px dashed var(--border)"}}>
+              <button className="dp-btn dp-btn-ghost" style={{width:"100%",justifyContent:"center"}}
+                onClick={()=>{setShowRouteModal(false);setShowEmailSend(true);setEmailMsg(null);setEmailTo("");setEmailNote("");}}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                Send directly to an email address instead
+              </button>
+              <div style={{fontSize:11,color:"var(--muted)",textAlign:"center",marginTop:6}}>
+                Sends the document as a PDF to anyone, even if they're not on NkoAha.
+              </div>
+            </div>
+
             <div className="dp-modal-footer">
               <button className="dp-btn dp-btn-ghost" onClick={()=>{setShowRouteModal(false);setSelectedRoute([]);}}>Cancel</button>
               <button className="dp-btn dp-btn-primary" onClick={saveRoute} disabled={selectedRoute.length===0}>
                 Send to {selectedRoute.length} Recipient{selectedRoute.length!==1?"s":""}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Send-directly-to-email modal ── */}
+      {showEmailSend&&(
+        <div className="dp-modal-backdrop" onClick={()=>{if(!emailSending)setShowEmailSend(false);}}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()}>
+            <h3>Send to an Email Address</h3>
+            <p className="dp-modal-sub">
+              The document will be sent as a PDF attachment to the address below. They don't need a NkoAha account — and they'll be invited to join.
+            </p>
+
+            <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
+              Recipient email
+            </div>
+            <input
+              className="dp-auth-input"
+              type="email"
+              placeholder="name@example.com"
+              autoFocus
+              value={emailTo}
+              onChange={e=>{setEmailTo(e.target.value);setEmailMsg(null);}}
+              style={{marginBottom:12}}
+            />
+
+            <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
+              Add a note (optional)
+            </div>
+            <textarea
+              className="dp-comments-textarea"
+              rows={3}
+              placeholder="A short message to include in the email…"
+              value={emailNote}
+              onChange={e=>setEmailNote(e.target.value)}
+              style={{width:"100%",marginBottom:12,maxHeight:120}}
+            />
+
+            {emailMsg&&(
+              <div style={{fontSize:12.5,padding:"9px 12px",borderRadius:8,marginBottom:10,
+                background:emailMsg.type==="success"?"#dcfce7":"#fee2e2",
+                color:emailMsg.type==="success"?"#16a34a":"#dc2626"}}>
+                {emailMsg.text}
+              </div>
+            )}
+
+            <div className="dp-modal-footer">
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setShowEmailSend(false)} disabled={emailSending}>Cancel</button>
+              <button className="dp-btn dp-btn-primary" onClick={sendDocumentToEmail} disabled={emailSending||!emailTo.trim()}>
+                {emailSending?"Sending…":"Send Document"}
               </button>
             </div>
           </div>
