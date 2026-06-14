@@ -172,31 +172,6 @@ export default function InboxPage() {
     setLoading(false);
   }
 
-  async function actionItem(item: InboxItem, actionType: "forward"|"save") {
-    setActioning(item.id);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    await supabase.from("activity_logs").update({
-      metadata: { ...item.metadata, status: "actioned", actioned_at: new Date().toISOString(), action_type: actionType },
-    }).eq("id", item.id);
-
-    await supabase.from("document_routes").update({
-      status: "completed", actioned_at: new Date().toISOString(),
-    }).eq("document_id", item.document_id).eq("recipient_id", user.id);
-
-    if (actionType === "forward") {
-      await supabase.from("document_routes").update({ status: "pending" })
-        .eq("document_id", item.document_id).eq("route_order", item.step_order + 1);
-    }
-    if (item.is_final || actionType === "save") {
-      await supabase.from("documents").update({ status: "signed" }).eq("id", item.document_id);
-    }
-
-    setActioning(null);
-    loadInbox();
-  }
-
   async function acceptInvite(item: InboxItem) {
     setActioning(item.id);
     const { data: { user } } = await supabase.auth.getUser();
@@ -376,8 +351,9 @@ export default function InboxPage() {
 
                     {/* ── Action buttons ── */}
 
-                    {/* Notification-only: View button marks as read */}
-                    {item.status === "pending" && isNotifOnly && (
+                    {/* Notification-only: View button marks as read.
+                        Declines are purely informational — no View button. */}
+                    {item.status === "pending" && isNotifOnly && item.action !== "document_declined" && (
                       <div className="ib-actions">
                         {item.action === "proof_issued" && item.metadata?.proof_html ? (
                           <button className="ib-btn final" onClick={()=>viewCertificate(item)}>
@@ -416,36 +392,14 @@ export default function InboxPage() {
                       </div>
                     )}
 
-                    {/* Document routing — forward or final save */}
+                    {/* Document routing — view only (action happens in the document page) */}
                     {item.status === "pending" && item.action === "document_received" && (
                       <div className="ib-actions">
-                        {item.is_final ? (
-                          <>
-                            <button className="ib-btn final" disabled={actioning===item.id}
-                              onClick={()=>actionItem(item,"save")}>
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-                              {actioning===item.id ? "Saving…" : "Approve & Save"}
-                            </button>
-                            <button className="ib-btn ghost"
-                              onClick={()=>navigate("/dashboard/individual",{state:{openDocId:item.document_id}})}>
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                              View Document
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button className="ib-btn forward" disabled={actioning===item.id}
-                              onClick={()=>actionItem(item,"forward")}>
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                              {actioning===item.id ? "Forwarding…" : "Forward to Next"}
-                            </button>
-                            <button className="ib-btn ghost"
-                              onClick={()=>navigate("/dashboard/individual",{state:{openDocId:item.document_id}})}>
-                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                              View Document
-                            </button>
-                          </>
-                        )}
+                        <button className="ib-btn ghost"
+                          onClick={()=>navigate("/dashboard/individual",{state:{openDocId:item.document_id}})}>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                          View Document
+                        </button>
                       </div>
                     )}
 

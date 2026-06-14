@@ -60,6 +60,11 @@ interface SupportChatProps { hasPremium?: boolean; }
 
 export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProps) {
   const [open, setOpen]               = useState(false);
+  // Draggable position offset (px from default bottom-right anchor).
+  // null = use default CSS position; once dragged, we switch to absolute coords.
+  const [dragPos, setDragPos]         = useState<{x:number;y:number}|null>(null);
+  const dragState = useRef<{startX:number;startY:number;origX:number;origY:number;dragging:boolean}>({startX:0,startY:0,origX:0,origY:0,dragging:false});
+  const suppressClick = useRef(false); // true right after a bubble-drag, to swallow the click
   const [messages, setMessages]       = useState<Msg[]>([]);
   const [session, setSession]         = useState<ChatSession | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -349,12 +354,60 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
 
   const isOpen = session?.status === "open";
 
+  // ── Drag handling: grab the header (open) OR the bubble (closed) to move ──
+  // The offset is applied to the whole .sc-fab container, so the button and
+  // window share one position and it persists across open/close.
+  // Uses translate() so it doesn't fight the parent's fixed bottom-right anchor.
+  const startDrag = (e: React.MouseEvent, opts?: { isButton?: boolean }) => {
+    // When dragging the open window header, ignore clicks on its buttons
+    if (!opts?.isButton && (e.target as HTMLElement).closest("button")) return;
+    dragState.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: dragPos ? dragPos.x : 0,
+      origY: dragPos ? dragPos.y : 0,
+      dragging: true,
+    };
+    let moved = false;
+    const onMove = (ev: MouseEvent) => {
+      if (!dragState.current.dragging) return;
+      const dx = ev.clientX - dragState.current.startX;
+      const dy = ev.clientY - dragState.current.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      const maxLeft  = window.innerWidth  - 360;
+      const maxUp    = window.innerHeight - 120;
+      const nx = Math.max(-maxLeft, Math.min(24, dragState.current.origX + dx));
+      const ny = Math.max(-maxUp,   Math.min(24, dragState.current.origY + dy));
+      setDragPos({ x: nx, y: ny });
+    };
+    const onUp = () => {
+      dragState.current.dragging = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      // If the bubble was dragged (not just clicked), suppress the open/close
+      if (opts?.isButton && moved) {
+        suppressClick.current = true;
+        setTimeout(() => { suppressClick.current = false; }, 50);
+      }
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
+  const onDragStart = (e: React.MouseEvent) => startDrag(e);
+
+  // Apply the drag offset as a transform on the whole container.
+  const fabStyle: React.CSSProperties = dragPos
+    ? { transform: `translate(${dragPos.x}px, ${dragPos.y}px)` }
+    : {};
+  const windowStyle: React.CSSProperties = {};
+
   return (
-    <div className="sc-fab">
+    <div className="sc-fab" style={fabStyle}>
       {open && (
-        <div className="sc-window">
-          {/* Header */}
-          <div className="sc-header">
+        <div className="sc-window" style={windowStyle}>
+          {/* Header — drag handle */}
+          <div className="sc-header" onMouseDown={onDragStart} style={{cursor:"grab",userSelect:"none"}}>
             <div className="sc-header-avatar">💬</div>
             <div className="sc-header-info">
               <div className="sc-header-name">NkoAha Support</div>
@@ -484,7 +537,10 @@ export default function SupportChat({ hasPremium: _hasPremium }: SupportChatProp
         </div>
       )}
 
-      <button className={`sc-fab-btn ${open?"open":""}`} onClick={()=>setOpen(o=>!o)} title="Support">
+      <button className={`sc-fab-btn ${open?"open":""}`}
+        onMouseDown={e=>{ if(!open) startDrag(e,{isButton:true}); }}
+        onClick={()=>{ if(suppressClick.current) return; setOpen(o=>!o); }}
+        title="Support" style={{cursor:open?"pointer":"grab"}}>
         {open ? "×" : "💬"}
         {!open && unreadCount > 0 && (
           <span className="sc-fab-badge">{unreadCount>9?"9+":unreadCount}</span>

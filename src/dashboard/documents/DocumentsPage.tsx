@@ -287,7 +287,7 @@ async function docxToHtml(arrayBuffer: ArrayBuffer): Promise<string> {
   return value || "";
 }
 
-function buildDocxIframeHtml(bodyHtml: string): string {
+function buildDocxIframeHtml(bodyHtml: string, readOnly = false): string {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -323,10 +323,10 @@ function buildDocxIframeHtml(bodyHtml: string): string {
   img{max-width:100%;height:auto;margin:4pt 0;display:inline-block;vertical-align:middle}
   ::selection{background:rgba(124,58,237,.2)}body{cursor:text}
 </style></head>
-<body contenteditable="true" spellcheck="true">${bodyHtml}</body></html>`;
+<body contenteditable="${readOnly ? "false" : "true"}" spellcheck="true">${bodyHtml}</body></html>`;
 }
 
-function DocxIframeEditor({ html, onSave }: { html: string; onSave: (html: string) => void }) {
+function DocxIframeEditor({ html, onSave, readOnly = false }: { html: string; onSave: (html: string) => void; readOnly?: boolean }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -334,15 +334,17 @@ function DocxIframeEditor({ html, onSave }: { html: string; onSave: (html: strin
     const iframe = iframeRef.current;
     if (!iframe?.contentDocument) return;
     const doc = iframe.contentDocument;
-    doc.open(); doc.write(buildDocxIframeHtml(html)); doc.close();
+    doc.open(); doc.write(buildDocxIframeHtml(html, readOnly)); doc.close();
     const body = doc.body;
     if (!body) return;
-    const onChange = () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => { onSave(body.innerHTML); }, 600);
-    };
-    body.addEventListener("input", onChange);
-    body.addEventListener("keyup", onChange);
+    if (!readOnly) {
+      const onChange = () => {
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => { onSave(body.innerHTML); }, 600);
+      };
+      body.addEventListener("input", onChange);
+      body.addEventListener("keyup", onChange);
+    }
     const resize = () => {
       if (!iframe || !doc.body) return;
       iframe.style.height = "0px";
@@ -351,7 +353,7 @@ function DocxIframeEditor({ html, onSave }: { html: string; onSave: (html: strin
     new (window as any).ResizeObserver(resize).observe(doc.body);
     new MutationObserver(resize).observe(doc.body, { childList:true, subtree:true, characterData:true });
     resize();
-  }, [html, onSave]);
+  }, [html, onSave, readOnly]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -476,6 +478,10 @@ async function convertDocxToPdfViaCloudConvert(
 export default function DocumentsPage() {
   const [documents, setDocuments]     = useState<DocumentItem[]>([]);
   const [activeDoc, setActiveDoc]     = useState<DocumentItem|null>(null);
+  // Organisation Documents (read-only) — populated for org owners only
+  const [orgDocs, setOrgDocs]         = useState<any[]>([]);
+  const [isOrgOwner, setIsOrgOwner]   = useState(false);
+  const [orgDocMeta, setOrgDocMeta]   = useState<Record<string,{owner_email:string;status:string;is_external:boolean;participants:string}>>({});
   const [saveStatus, setSaveStatus]   = useState<SaveStatus>("saved");
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages]   = useState(1);
@@ -512,6 +518,7 @@ export default function DocumentsPage() {
   // Route action state — set when current user is a recipient of the active doc
   const [myRoute, setMyRoute] = useState<{id:string;is_final:boolean;status:string;route_order:number;total_steps:number}|null>(null);
   const [routeActioning, setRouteActioning] = useState(false);
+  const [actionKind, setActionKind] = useState<"approve"|"decline"|null>(null); // which action is running
   // Comments dialog state
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments]         = useState<any[]>([]);
@@ -522,6 +529,7 @@ export default function DocumentsPage() {
 
   // Returns true if this overlay was placed by a previous recipient and must not be touched
   const isLocked=(ov:PdfOverlay):boolean=>{
+    if((activeDoc as any)?.isOrgDoc) return true; // org read-only view — lock EVERYTHING
     if(!myRoute) return false; // owner — nothing locked
     if(ov.step===undefined||ov.step===null) return false; // legacy overlay — allow
     return ov.step < myRoute.route_order; // placed by someone earlier in the chain
@@ -529,6 +537,10 @@ export default function DocumentsPage() {
   // Auth confirmation modal for approve actions
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authAction, setAuthAction] = useState<"approve"|"save"|null>(null);
+  // Verification method for the approval modal: "authenticator" (TOTP) or "email_otp"
+  const [authMethod, setAuthMethod] = useState<"authenticator"|"email_otp">("authenticator");
+  const [otpSending, setOtpSending] = useState(false);   // email code being sent
+  const [otpSentTo, setOtpSentTo]   = useState("");      // masked email for display
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -609,6 +621,39 @@ export default function DocumentsPage() {
       if(openDocId){
         const target=allDocs.find((d:any)=>d.id===openDocId);
         if(target) setTimeout(()=>openDocument(target),100);
+      }
+
+      // ── Organisation Documents: only for org owners ──
+      // Calls the org_visible_documents() RPC, which returns final internal
+      // docs + any docs the org's members participated in (read-only).
+      const{data:ownedOrg}=await supabase.from("organizations")
+        .select("id").eq("owner_id",user.id).maybeSingle();
+      if(ownedOrg?.id){
+        setIsOrgOwner(true);
+        const{data:orgVisible,error:orgErr}=await supabase.rpc("org_visible_documents");
+        if(!orgErr && orgVisible){
+          // Exclude docs the owner already has in their own list
+          const ownIds=new Set(allDocs.map((d:any)=>d.id));
+          const metaMap:Record<string,any>={};
+          const list=(orgVisible as any[])
+            .filter(d=>!ownIds.has(d.id))
+            .map(d=>{
+              metaMap[d.id]={
+                owner_email:d.owner_email||"Unknown",
+                status:d.status||"",
+                is_external:!!d.is_external,
+                participants:d.participants||"",
+              };
+              return {
+                id:d.id,title:d.title,fileUrl:"",
+                format:(d.format||"pdf") as DocFormat,pages:d.pages||1,
+                pdfUrl:d.pdf_url||"",pdfReady:d.pdf_ready||false,
+                isOrgDoc:true,
+              };
+            });
+          setOrgDocs(list);
+          setOrgDocMeta(metaMap);
+        }
       }
     })();
   },[]);
@@ -775,6 +820,73 @@ export default function DocumentsPage() {
     }
     // Load comments
     loadComments(doc.id);
+  };
+
+  /* ── Open an Organisation Document (READ-ONLY) ──
+     Loads content for viewing/download/print only. No myRoute, no routing,
+     no editing. Overlays are loaded so the baked output matches, but the
+     doc is flagged isOrgDoc so the topbar shows only Download + Print. ── */
+  const openOrgDocument=async(doc:any)=>{
+    setLoading(true);
+    setPdfDoc(null);setPdfOverlays([]);setPdfTool("none");
+    setDocxHtmlPages([]);setDocxOverlays([]);setDocxTool('none');setDocxPdfDoc(null);setDocxPdfReady(false);
+    setEditorPages([EMPTY_DOC]);setNewDocOverlays([]);
+    setMyRoute(null);
+    pdfCanvasRefs.current=[];docxPdfCanvasRefs.current=[];
+
+    const{data,error}=await supabase.from("documents")
+      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready,owner_id")
+      .eq("id",doc.id).single();
+    if(error){console.error("Org doc open failed (RLS?):",error);alert("Could not open this document. You may not have access.");setLoading(false);return;}
+
+    // Mark active doc as a read-only org doc
+    setActiveDoc({...doc,isOrgDoc:true} as any);
+    setDocTitle(data?.title??doc.title);
+    setHeader(data?.header||"");setFooter(data?.footer||"");
+    setCurrentPage(1);setSaveStatus("saved");
+    setIsInitiator(false);
+
+    const stampOverlays=(ovs:PdfOverlay[]):PdfOverlay[]=>ovs.map(o=>({...o,step:o.step!==undefined?o.step:0}));
+    const fmt=data?.format||doc.format;
+
+    if(fmt==="pdf"){
+      const url=data?.file_url||doc.fileUrl;
+      if(url){
+        try{
+          const pdfjs=await loadPdfJs();
+          const resp=await fetch(url);const buf=await resp.arrayBuffer();
+          const loaded=await pdfjs.getDocument({data:new Uint8Array(buf)}).promise;
+          setPdfDoc(loaded);setTotalPages(loaded.numPages);
+          const saved=data?.annotations;
+          if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.pdfOverlays)setPdfOverlays(stampOverlays(p.pdfOverlays));}
+        }catch(e){console.error(e);}
+      }
+    }else if(fmt==="docx"){
+      const savedContent=data?.content?(typeof data.content==="string"?JSON.parse(data.content):data.content):null;
+      if(savedContent?.format==="docx-html-edited"&&Array.isArray(savedContent.pages)){
+        setDocxHtmlPages(savedContent.pages);setTotalPages(savedContent.pages.length);
+        if(savedContent.overlays) setDocxOverlays(stampOverlays(savedContent.overlays));
+      }else{
+        const html=data?.html_content||"";
+        if(html){const pages=splitDocxHtmlIntoPages(html);setDocxHtmlPages(pages);setTotalPages(pages.length);}
+        else{setDocxHtmlPages(["<p>No content.</p>"]);setTotalPages(1);}
+      }
+      if(data?.pdf_ready&&data?.pdf_url){
+        setDocxPdfReady(true);
+        try{
+          const pdfjs=await loadPdfJs();
+          const resp=await fetch(data.pdf_url);const buf=await resp.arrayBuffer();
+          const loaded=await pdfjs.getDocument({data:new Uint8Array(buf)}).promise;
+          setDocxPdfDoc(loaded);setTotalPages(loaded.numPages);
+        }catch(e){console.error(e);}
+      }
+    }else{
+      const raw=data?.content?(typeof data.content==="string"?JSON.parse(data.content):data.content):EMPTY_DOC;
+      const pages=splitJsonIntoPages(raw);setEditorPages(pages);setTotalPages(pages.length);
+      const saved=data?.annotations;
+      if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.newDocOverlays)setNewDocOverlays(stampOverlays(p.newDocOverlays));}
+    }
+    setLoading(false);
   };
 
   /* ── Comments ── */
@@ -1546,6 +1658,7 @@ export default function DocumentsPage() {
 
   useEffect(()=>{
     if(!activeDoc||saveStatus!=="unsaved")return;
+    if((activeDoc as any).isOrgDoc)return; // org docs are read-only — never save
     if(activeDoc.format==="new"){autosave(activeDoc.id,editorPages,docTitle,header,footer,newDocOverlays);}
     else if(activeDoc.format==="docx"){
       supabase.from("documents").update({
@@ -1718,11 +1831,37 @@ export default function DocumentsPage() {
 
   /* ── Route action handlers (for recipients) ── */
   /* ── Auth verify then execute approve ── */
-  const requestApprove=(action:"approve"|"save")=>{
+  const requestApprove=async(action:"approve"|"save")=>{
     setAuthAction(action);
     setAuthPassword("");
     setAuthError("");
+    setOtpSentTo("");
     setShowAuthModal(true);
+
+    // Determine how this user verifies, then prep accordingly.
+    const{data:{user}}=await supabase.auth.getUser();
+    let method:"authenticator"|"email_otp"="authenticator";
+    if(user){
+      const{data:prof}=await supabase.from("profiles").select("auth_method").eq("id",user.id).maybeSingle();
+      method=(prof?.auth_method as any)||"authenticator";
+    }
+    setAuthMethod(method);
+
+    // Email-OTP users get a code sent immediately when the modal opens.
+    if(method==="email_otp"){
+      setOtpSending(true);
+      try{
+        const{data,error}=await supabase.functions.invoke("auth-email-otp",{
+          body:{action:"send",purpose:"approve"},
+        });
+        if(error||(data as any)?.error){
+          setAuthError((data as any)?.error||"Could not send the code. Try again.");
+        }else{
+          setOtpSentTo((data as any)?.sentTo||"your email");
+        }
+      }catch(e:any){ setAuthError(e?.message||"Could not send the code."); }
+      setOtpSending(false);
+    }
   };
 
   const verifyAndApprove=async()=>{
@@ -1731,25 +1870,43 @@ export default function DocumentsPage() {
       setAuthError("Code must be exactly 6 digits."); return;
     }
     setAuthLoading(true); setAuthError("");
-    try{
-      // Verify identity using MFA (same flow as MFAVerify.tsx)
-      const{data:factors,error:fe}=await supabase.auth.mfa.listFactors();
-      if(fe||!factors?.totp?.length){
-        setAuthError("No authenticator app set up. Please set up MFA in your account.");
+
+    if(authMethod==="email_otp"){
+      // ── Verify the emailed 6-digit code via the edge function ──
+      try{
+        const{data,error}=await supabase.functions.invoke("auth-email-otp",{
+          body:{action:"verify",code:authPassword.trim(),purpose:"approve"},
+        });
+        if(error||(data as any)?.error||!(data as any)?.verified){
+          setAuthError((data as any)?.error||"Incorrect code. Try again.");
+          setAuthLoading(false); return;
+        }
+      }catch(err:any){
+        setAuthError(err?.message||"Verification failed. Please try again.");
         setAuthLoading(false); return;
       }
-      const{error:verifyError}=await supabase.auth.mfa.challengeAndVerify({
-        factorId:factors.totp[0].id,
-        code:authPassword.trim(),
-      });
-      if(verifyError){
-        setAuthError("Incorrect code. Please check your authenticator app and try again.");
+    } else {
+      // ── Authenticator (TOTP) — same flow as MFAVerify.tsx ──
+      try{
+        const{data:factors,error:fe}=await supabase.auth.mfa.listFactors();
+        if(fe||!factors?.totp?.length){
+          setAuthError("No authenticator app set up. Please set up MFA in your account.");
+          setAuthLoading(false); return;
+        }
+        const{error:verifyError}=await supabase.auth.mfa.challengeAndVerify({
+          factorId:factors.totp[0].id,
+          code:authPassword.trim(),
+        });
+        if(verifyError){
+          setAuthError("Incorrect code. Please check your authenticator app and try again.");
+          setAuthLoading(false); return;
+        }
+      }catch(err:any){
+        setAuthError(err.message||"Verification failed. Please try again.");
         setAuthLoading(false); return;
       }
-    }catch(err:any){
-      setAuthError(err.message||"Verification failed. Please try again.");
-      setAuthLoading(false); return;
     }
+
     setAuthLoading(false);
     setShowAuthModal(false);
     setAuthPassword("");
@@ -1760,7 +1917,7 @@ export default function DocumentsPage() {
 
   const handleApprove=async()=>{
     if(!myRoute||!activeDoc)return;
-    setRouteActioning(true);
+    setRouteActioning(true);setActionKind("approve");
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
 
     // ── Save all current overlays/changes before approving ──
@@ -1838,7 +1995,7 @@ export default function DocumentsPage() {
       });
     }
     setMyRoute({...myRoute,status:"completed"});
-    setRouteActioning(false);
+    setRouteActioning(false);setActionKind(null);
     // Remove routed doc from this recipient's sidebar (they've passed it on)
     setDocuments(prev=>prev.filter(d=>d.id!==activeDoc.id));
     setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
@@ -1847,7 +2004,7 @@ export default function DocumentsPage() {
 
   const handleSaveDoc=async()=>{
     if(!myRoute||!activeDoc)return;
-    setRouteActioning(true);
+    setRouteActioning(true);setActionKind("approve");
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
 
     // Save all overlays/changes before marking as signed
@@ -1887,7 +2044,7 @@ export default function DocumentsPage() {
       });
     }
     setMyRoute({...myRoute,status:"completed"});
-    setRouteActioning(false);
+    setRouteActioning(false);setActionKind(null);
     alert("Document approved and signed. Your Proof certificate has been issued to your inbox.\n\nYou can now Download or Print the document — it will be removed from your list after you do.");
   };
 
@@ -2234,13 +2391,18 @@ export default function DocumentsPage() {
   const handleDeclineRoute=async()=>{
     if(!myRoute||!activeDoc)return;
     if(!confirm("Decline this document? Everyone who has been involved will be notified."))return;
-    setRouteActioning(true);
+    setRouteActioning(true);setActionKind("decline");
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
 
-    // 1. Mark all route steps as declined
+    // 1. Mark ONLY the current user's step as declined.
+    //    (Previously this declined EVERY step, which made the proof
+    //    certificate show all participants as "declined" — wrong. Each
+    //    person's route status must reflect what THEY actually did:
+    //    earlier signers stay "completed", later ones stay "waiting".)
     await supabase.from("document_routes")
       .update({status:"declined",actioned_at:new Date().toISOString()})
-      .eq("document_id",activeDoc.id);
+      .eq("document_id",activeDoc.id)
+      .eq("recipient_id",user.id);
 
     // 2. Mark document as declined
     await supabase.from("documents").update({status:"declined"}).eq("id",activeDoc.id);
@@ -2311,11 +2473,11 @@ export default function DocumentsPage() {
         myRoute.route_order,myRoute.total_steps,sigUrld,docTitle);
     }
     setMyRoute({...myRoute,status:"declined"});
-    setRouteActioning(false);
+    setRouteActioning(false);setActionKind(null);
     alert("Document declined. All involved parties have been notified.");
   };
 
-  const handleRightClick=(e:React.MouseEvent)=>{e.preventDefault();if(!activeDoc)return;setContextPos({x:e.clientX,y:e.clientY});};
+  const handleRightClick=(e:React.MouseEvent)=>{e.preventDefault();if(!activeDoc)return;if((activeDoc as any).isOrgDoc)return;setContextPos({x:e.clientX,y:e.clientY});};
 
   // FIX 5: insertDate handles all doc types
   const insertDate=()=>{
@@ -2434,6 +2596,32 @@ export default function DocumentsPage() {
                   {!(doc as any).isShared && <button className="dp-doc-delete" onClick={e=>deleteDocument(e,doc)}><Ico.Trash/></button>}
                 </div>
               ))}
+
+              {/* ── Organisation Documents (read-only, org owners only) ── */}
+              {isOrgOwner && orgDocs.length>0 && (<>
+                <div className="dp-doc-section" style={{marginTop:8}}>
+                  Organisation Documents
+                  <span style={{marginLeft:6,fontSize:9,background:"rgba(124,58,237,.25)",color:"#c4b5fd",padding:"1px 6px",borderRadius:10,letterSpacing:0}}>read-only</span>
+                </div>
+                {orgDocs.map(doc=>{
+                  const meta=orgDocMeta[doc.id]||{owner_email:"",status:"",is_external:false,participants:""};
+                  return (
+                    <div key={doc.id} className={`dp-doc-item ${activeDoc?.id===doc.id?"active":""}`} onClick={()=>openOrgDocument(doc)}>
+                      <div className={`dp-doc-icon ${doc.format}`}><Ico.FileDoc/></div>
+                      <div className="dp-doc-meta">
+                        <div className="dp-doc-name">{doc.title}</div>
+                        <div className="dp-doc-pages" style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+                          {meta.is_external
+                            ? <span style={{color:"#fbbf24"}}>● external</span>
+                            : <span style={{color:"#6ee7b7"}}>● internal</span>}
+                          <span style={{color:"rgba(255,255,255,.3)"}}>·</span>
+                          <span style={{color:"rgba(255,255,255,.45)",textTransform:"capitalize"}}>{meta.status||"—"}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>)}
             </>
           }
         </div>
@@ -2443,9 +2631,32 @@ export default function DocumentsPage() {
         <div className="dp-topbar">
           {activeDoc?(
             <>
-              <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled"/>
-              <span className={`dp-save-badge ${saveStatus}`}>{saveStatus==="saved"?"● Saved":saveStatus==="saving"?"⟳ Saving…":"● Unsaved"}</span>
+              <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled" readOnly={(activeDoc as any).isOrgDoc}/>
+              {!(activeDoc as any).isOrgDoc && <span className={`dp-save-badge ${saveStatus}`}>{saveStatus==="saved"?"● Saved":saveStatus==="saving"?"⟳ Saving…":"● Unsaved"}</span>}
               {activeDoc.format!=="new"&&<span style={{fontSize:10,fontFamily:"var(--mono)",background:"var(--accent-light)",color:"var(--accent)",padding:"2px 8px",borderRadius:20}}>{activeDoc.format.toUpperCase()}</span>}
+              {/* ── Organisation Document: READ-ONLY (Download + Print only) ── */}
+              {(activeDoc as any).isOrgDoc ? (
+                <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+                  <span style={{fontSize:10,fontFamily:"var(--mono)",background:"#ede9fe",color:"#7c3aed",padding:"2px 8px",borderRadius:20}}>
+                    🏢 Org · read-only
+                  </span>
+                  {orgDocMeta[activeDoc.id] && (
+                    <span style={{fontSize:10,color:"var(--muted)",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      {orgDocMeta[activeDoc.id].is_external?"External":"Internal"} · owner: {orgDocMeta[activeDoc.id].owner_email} · {orgDocMeta[activeDoc.id].status}
+                      {orgDocMeta[activeDoc.id].participants?` · via: ${orgDocMeta[activeDoc.id].participants}`:""}
+                    </span>
+                  )}
+                  <div style={{width:1,height:20,background:"var(--border)",flexShrink:0,margin:"0 2px"}}/>
+                  <button className="dp-btn dp-btn-ghost" onClick={handleDownloadDoc} title="Download as PDF">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Download
+                  </button>
+                  <button className="dp-btn dp-btn-ghost" onClick={handlePrintDoc} title="Print document">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                    Print
+                  </button>
+                </div>
+              ) : (<>
               {/* Show route action buttons if user is a recipient, otherwise show Route button */}
               {myRoute && <span style={{fontSize:9,fontFamily:"var(--mono)",background:"#fef9c3",color:"#b45309",padding:"2px 6px",borderRadius:4,flexShrink:0}}>route:{myRoute.status}</span>}
               {myRoute && myRoute.status === "pending" ? (
@@ -2454,11 +2665,11 @@ export default function DocumentsPage() {
                   <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
                     <button className="dp-btn" style={{background:"transparent",color:"#dc2626",border:"1px solid #dc2626"}} onClick={handleDeclineRoute} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      Decline
+                      {routeActioning&&actionKind==="decline"?"Declining…":"Decline"}
                     </button>
                     <button className="dp-btn dp-btn-primary" style={{background:"#16a34a"}} onClick={()=>requestApprove("save")} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
-                      {routeActioning?"Approving…":"Approve"}
+                      {routeActioning&&actionKind==="approve"?"Approving…":"Approve"}
                     </button>
                     <div style={{width:1,height:20,background:"var(--border)",flexShrink:0,margin:"0 2px"}}/>
                     <button className="dp-btn dp-btn-ghost" onClick={handleDownloadDoc} title="Download as PDF">
@@ -2475,7 +2686,7 @@ export default function DocumentsPage() {
                   <div style={{display:"flex",gap:6,flexShrink:0}}>
                     <button className="dp-btn" style={{background:"transparent",color:"#dc2626",border:"1px solid #dc2626"}} onClick={handleDeclineRoute} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      Decline
+                      {routeActioning&&actionKind==="decline"?"Declining…":"Decline"}
                     </button>
                     <button className="dp-btn dp-btn-ghost" onClick={()=>{setShowComments(o=>!o);if(!showComments&&activeDoc)loadComments(activeDoc.id);}}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -2483,7 +2694,7 @@ export default function DocumentsPage() {
                     </button>
                     <button className="dp-btn dp-btn-primary" onClick={()=>requestApprove("approve")} disabled={routeActioning}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
-                      {routeActioning?"Approving…":"Approve"}
+                      {routeActioning&&actionKind==="approve"?"Approving…":"Approve"}
                     </button>
                   </div>
                 )
@@ -2524,6 +2735,7 @@ export default function DocumentsPage() {
                   </div>
                 )
               )}
+              </>)}
               {avatarUrl&&<img src={avatarUrl} alt="avatar" crossOrigin="anonymous" style={{width:30,height:30,borderRadius:"50%",objectFit:"cover",flexShrink:0,border:"2px solid var(--accent-light)"}}/>}
             </>
           ):(
@@ -2567,7 +2779,7 @@ export default function DocumentsPage() {
           >
             {/* ══ PDF ══ */}
             {activeDoc.format==="pdf"&&pdfDoc&&(<>
-              <div className="dp-pdf-toolbar">
+              {!(activeDoc as any).isOrgDoc && <div className="dp-pdf-toolbar">
                 <span className="dp-pdf-toolbar-label">Place on document:</span>
                 {(["text","date","signature","image"] as const).map(tool=>(
                   <button key={tool} className={`dp-pdf-tool ${pdfTool===tool?"active":""}`} onClick={()=>{
@@ -2587,7 +2799,7 @@ export default function DocumentsPage() {
                 ))}
                 {pdfTool!=="none"&&<span className="dp-pdf-tool-hint">Click anywhere on the page to place</span>}
                 {pdfOverlays.some(o=>!isLocked(o))&&<button className="dp-pdf-tool" style={{marginLeft:"auto",color:"#dc2626"}} onClick={()=>{setPdfOverlays(prev=>prev.filter(o=>isLocked(o)));setSaveStatus("unsaved");}}>Clear Mine</button>}
-              </div>
+              </div>}
               {Array.from({length:totalPages}).map((_,i)=>(
                 <div key={i}>
                   {i>0&&<div className="dp-page-gap">Page {i+1}</div>}
@@ -2598,6 +2810,7 @@ export default function DocumentsPage() {
                     </div>
                     <div className="dp-pdf-stage" style={{cursor:pdfTool!=="none"?"crosshair":"default"}}
                       onClick={async e=>{
+                        if((activeDoc as any).isOrgDoc)return;
                         if(pdfTool==="none")return;
                         if(imagePickerOpen.current){ imagePickerOpen.current=false; return; }
                         const rect=e.currentTarget.getBoundingClientRect();
@@ -2691,7 +2904,7 @@ export default function DocumentsPage() {
               )}
               {docxPdfReady&&docxPdfDoc&&(<>
                 {/* Same toolbar as PDF */}
-                <div className="dp-pdf-toolbar">
+                {!(activeDoc as any).isOrgDoc && <div className="dp-pdf-toolbar">
                   <span className="dp-pdf-toolbar-label">Place on document:</span>
                   {(["text","date","signature","image"] as const).map(tool=>(
                     <button key={tool} className={`dp-pdf-tool ${docxTool===tool?"active":""}`} onClick={()=>{
@@ -2711,7 +2924,7 @@ export default function DocumentsPage() {
                   ))}
                   {docxTool!=="none"&&<span className="dp-pdf-tool-hint">Click anywhere on the page to place</span>}
                   {docxOverlays.some(o=>!isLocked(o))&&<button className="dp-pdf-tool" style={{marginLeft:"auto",color:"#dc2626"}} onClick={()=>{setDocxOverlays(prev=>prev.filter(o=>isLocked(o)));setSaveStatus("unsaved");}}>Clear Mine</button>}
-                </div>
+                </div>}
                 {Array.from({length:docxPdfDoc.numPages}).map((_,i)=>(
                   <div key={`${activeDoc.id}-docxpdf-${i}`}>
                     {i>0&&<div className="dp-page-gap">Page {i+1}</div>}
@@ -2722,6 +2935,7 @@ export default function DocumentsPage() {
                       </div>
                       <div className="dp-pdf-stage" style={{cursor:docxTool!=="none"?"crosshair":"default"}}
                         onClick={async e=>{
+                          if((activeDoc as any).isOrgDoc)return;
                           if(docxTool==="none")return;
                           const rect=e.currentTarget.getBoundingClientRect();
                           const x=((e.clientX-rect.left)/rect.width)*100;
@@ -2803,7 +3017,8 @@ export default function DocumentsPage() {
                       <div className="dp-page-card" style={{overflow:"visible"}}>
                         {!docxPdfReady&&<div className="dp-hf-bar"><input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0}/><span className="dp-hf-pagenum">{i+1} / {totalPages}</span></div>}
                         <DocxIframeEditor key={`${activeDoc.id}-iframe-${i}`} html={pageHtml}
-                          onSave={(newHtml:string)=>{setDocxHtmlPages(prev=>{const u=[...prev];u[i]=newHtml;return u;});setSaveStatus("unsaved");}}/>
+                          readOnly={(activeDoc as any).isOrgDoc}
+                          onSave={(newHtml:string)=>{if((activeDoc as any).isOrgDoc)return;setDocxHtmlPages(prev=>{const u=[...prev];u[i]=newHtml;return u;});setSaveStatus("unsaved");}}/>
                         {!docxPdfReady&&<div className="dp-hf-bar footer"><input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0}/></div>}
                       </div>
                     </div>
@@ -2825,14 +3040,15 @@ export default function DocumentsPage() {
                     <div className="dp-page-body" style={{position:"relative"}}>
                       <DocumentEditor
                         key={`${activeDoc.id}-p${i}`}
-                        content={pageContent} editable
-                        onUpdate={c=>{setEditorPages(prev=>{const u=[...prev];u[i]=c;return u;});setSaveStatus("unsaved");}}
+                        content={pageContent} editable={!(activeDoc as any).isOrgDoc}
+                        onUpdate={c=>{if((activeDoc as any).isOrgDoc)return;setEditorPages(prev=>{const u=[...prev];u[i]=c;return u;});setSaveStatus("unsaved");}}
                         onInsertDate={handleInsertDate} onInsertSignature={handleInsertSig} onInsertImage={handleInsertImg}
                       />
                       {/* Image overlays for new docs — draggable/resizable like PDF overlays */}
                       {newDocOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                        <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:"move",userSelect:"none",zIndex:10}}
+                        <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:(activeDoc as any).isOrgDoc?"default":"move",userSelect:"none",zIndex:10}}
                           onMouseDown={e=>{
+                            if((activeDoc as any).isOrgDoc)return; // org read-only — no drag
                             e.stopPropagation();
                             const startX=e.clientX,startY=e.clientY;
                             const startOx=ov.x,startOy=ov.y;
@@ -2851,8 +3067,8 @@ export default function DocumentsPage() {
                             document.addEventListener("mousemove",onMove);
                             document.addEventListener("mouseup",onUp);
                           }}>
-                          {/* Resize controls */}
-                          <div style={{position:"absolute",top:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:12,opacity:0}}
+                          {/* Resize controls — hidden for org read-only view */}
+                          {!(activeDoc as any).isOrgDoc && <div style={{position:"absolute",top:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:12,opacity:0}}
                             className="nd-img-ctrl"
                             onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.opacity="1";}}
                             onMouseLeave={e=>{(e.currentTarget as HTMLElement).style.opacity="0";}}>
@@ -2863,7 +3079,7 @@ export default function DocumentsPage() {
                               style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 2px"}}>−</button>
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}
                               style={{background:"#ef4444",border:"none",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",padding:"0 3px",borderRadius:3,marginLeft:2}}>×</button>
-                          </div>
+                          </div>}
                           <img src={ov.content} alt="attachment" crossOrigin="anonymous"
                             style={{width:(ov.fontSize||20)*10,maxWidth:700,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:4,border:"2px solid rgba(124,58,237,0.3)"}}
                             onError={e=>{(e.target as HTMLImageElement).style.display="none";}}
@@ -3049,11 +3265,15 @@ export default function DocumentsPage() {
       {showAuthModal&&(
         <div className="dp-auth-backdrop" onClick={()=>{if(!authLoading){setShowAuthModal(false);setAuthPassword("");setAuthError("");}}}>
           <div className="dp-auth-modal" onClick={e=>e.stopPropagation()}>
-            <div className="dp-auth-icon">🔐</div>
+            <div className="dp-auth-icon">{authMethod==="email_otp"?"✉️":"🔐"}</div>
             <div className="dp-auth-title">Confirm Your Identity</div>
             <div className="dp-auth-sub">
-              Enter the 6-digit code from your authenticator app to {authAction==="save"?"approve and sign":"approve and forward"} this document.<br/>
-              This ensures only you can authorise this action.
+              {authMethod==="email_otp"
+                ? <>{otpSending
+                      ? "Sending a 6-digit code to your email…"
+                      : <>Enter the 6-digit code we emailed to {otpSentTo||"your email"} to {authAction==="save"?"approve and sign":"approve and forward"} this document.</>}
+                  <br/>The code expires in 10 minutes.</>
+                : <>Enter the 6-digit code from your authenticator app to {authAction==="save"?"approve and sign":"approve and forward"} this document.<br/>This ensures only you can authorise this action.</>}
             </div>
             <input
               className="dp-auth-input"
@@ -3068,6 +3288,22 @@ export default function DocumentsPage() {
               style={{letterSpacing:"0.3em",fontSize:22,textAlign:"center",fontFamily:"var(--mono)"}}
             />
             {authError&&<div className="dp-auth-error">{authError}</div>}
+            {authMethod==="email_otp"&&!otpSending&&(
+              <div style={{textAlign:"center",marginBottom:10}}>
+                <span style={{fontSize:12,color:"var(--accent)",cursor:"pointer"}}
+                  onClick={async()=>{
+                    setOtpSending(true);setAuthError("");
+                    try{
+                      const{data,error}=await supabase.functions.invoke("auth-email-otp",{body:{action:"send",purpose:"approve"}});
+                      if(error||(data as any)?.error)setAuthError((data as any)?.error||"Could not resend.");
+                      else setOtpSentTo((data as any)?.sentTo||"your email");
+                    }catch(e:any){setAuthError(e?.message||"Could not resend.");}
+                    setOtpSending(false);
+                  }}>
+                  Resend code
+                </span>
+              </div>
+            )}
             <div className="dp-auth-btns">
               <button className="dp-auth-btn ghost" onClick={()=>{setShowAuthModal(false);setAuthPassword("");setAuthError("");}} disabled={authLoading}>
                 Cancel

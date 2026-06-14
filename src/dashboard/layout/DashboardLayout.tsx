@@ -5,6 +5,7 @@ import Topbar from "./Topbar";
 import Sidebar from "./Sidebar";
 import "../dashboard.css";
 import SupportChat from "../SupportChat";
+import BillingLimitGuard from "./BillingLimitGuard";
 import { subscribeToPush, isPushSubscribed, showLocalNotification } from "../../hooks/usePushNotifications";
 
 type Role = "individual" | "organization" | "organization_member";
@@ -214,6 +215,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       {!location.pathname.includes('/documents') && (
         <SupportChat hasPremium={hasPremium} />
       )}
+      {/* App-wide billing limit popup — shows on entry, every 30 min, and on
+          route change when the user is over their free limit with no active sub.
+          Renders nothing otherwise. */}
+      <BillingLimitGuard />
     </div>
   );
 }

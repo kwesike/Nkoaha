@@ -28,13 +28,14 @@ const STYLES = `
   .mfa-success-icon{font-size:56px;text-align:center;margin-bottom:12px}
 `;
 
-type Step = "password" | "mfa-intro" | "qr" | "verify" | "done";
+type Step = "password" | "method" | "mfa-intro" | "qr" | "verify" | "done";
 
 export default function MFASetupInvite() {
   const navigate  = useNavigate();
   const location  = useLocation();
 
   const [step, setStep]         = useState<Step>("password");
+  const [authMethod, setAuthMethod] = useState<"authenticator"|"email_otp">("authenticator");
   const [qrUrl, setQrUrl]       = useState("");
   const [secret, setSecret]     = useState("");
   const [factorId, setFactorId] = useState("");
@@ -68,15 +69,35 @@ export default function MFASetupInvite() {
     const { error } = await supabase.auth.updateUser({ password });
     setPwLoading(false);
     if (error) { setPwError(error.message); return; }
-    setStep("mfa-intro");
+    setStep("method");
+  }
+
+  // ── Step 1.5: Save chosen verification method, then branch ──
+  async function chooseMethod(method: "authenticator" | "email_otp") {
+    setAuthMethod(method);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      await supabase.from("profiles").update({ auth_method: method }).eq("id", user.id);
+    }
+    if (method === "authenticator") {
+      setStep("mfa-intro");
+    } else {
+      // Email OTP — no authenticator to set up; their email is the OTP address.
+      setStep("done");
+      setTimeout(() => navigate(destination, { replace: true }), 2000);
+    }
   }
 
   // ── Step 2: Start MFA enroll ──
   async function startMFA() {
     setMfaLoading(true); setMfaError("");
     try {
+      // Get user email for friendlyName — makes QR show "NkoAha:user@email.com"
+      const { data: { user: enrollUser } } = await supabase.auth.getUser();
       const { data, error } = await supabase.auth.mfa.enroll({
-        factorType: "totp", issuer: "NkoAha",
+        factorType: "totp",
+        issuer: "NkoAha",
+        friendlyName: enrollUser?.email || "NkoAha User",
       });
       if (error) throw error;
       setQrUrl(data.totp.qr_code);
@@ -123,11 +144,13 @@ export default function MFASetupInvite() {
   const s = step as string;
   const stepDefs = [
     { key: "password",  label: "Password" },
-    { key: "mfa-intro", label: "2FA"      },
+    { key: "mfa-intro", label: "Verify"   },
     { key: "done",      label: "Done"     },
   ];
   const stepIndex = (k: string) =>
-    k === "password" ? 0 : k === "mfa-intro" || k === "qr" || k === "verify" ? 1 : 2;
+    k === "password" ? 0
+      : k === "method" || k === "mfa-intro" || k === "qr" || k === "verify" ? 1
+      : 2;
   const currentIdx = stepIndex(s);
 
   return (
@@ -193,6 +216,42 @@ export default function MFASetupInvite() {
           >
             {pwLoading ? "Saving…" : "Set Password & Continue"}
           </button>
+        </>)}
+
+        {/* ── Step 1.5: Choose verification method ── */}
+        {step === "method" && (<>
+          <div style={{fontSize:32,textAlign:"center",marginBottom:12}}>🛡️</div>
+          <h2>How will you verify your identity?</h2>
+          <p className="auth-subtitle">
+            NkoAha verifies you when approving documents. Choose how you'd like to do that.
+          </p>
+          <div style={{display:"flex",flexDirection:"column",gap:10,margin:"16px 0"}}>
+            <button type="button" onClick={()=>chooseMethod("authenticator")}
+              style={{display:"flex",alignItems:"center",gap:11,padding:"13px 14px",borderRadius:11,border:"1.5px solid #e7e4df",background:"#fff",cursor:"pointer",textAlign:"left",transition:"all .15s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor="#7c3aed";e.currentTarget.style.background="#faf8ff";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="#e7e4df";e.currentTarget.style.background="#fff";}}>
+              <span style={{fontSize:22}}>🔐</span>
+              <span style={{flex:1}}>
+                <span style={{display:"block",fontWeight:700,fontSize:14,color:"#1c1917"}}>Authenticator app</span>
+                <span style={{display:"block",fontSize:12,color:"#78716c"}}>Most secure · Google Authenticator, Authy, etc.</span>
+              </span>
+              <span style={{color:"#7c3aed",fontSize:18}}>›</span>
+            </button>
+            <button type="button" onClick={()=>chooseMethod("email_otp")}
+              style={{display:"flex",alignItems:"center",gap:11,padding:"13px 14px",borderRadius:11,border:"1.5px solid #e7e4df",background:"#fff",cursor:"pointer",textAlign:"left",transition:"all .15s"}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor="#7c3aed";e.currentTarget.style.background="#faf8ff";}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor="#e7e4df";e.currentTarget.style.background="#fff";}}>
+              <span style={{fontSize:22}}>✉️</span>
+              <span style={{flex:1}}>
+                <span style={{display:"block",fontWeight:700,fontSize:14,color:"#1c1917"}}>Email code</span>
+                <span style={{display:"block",fontSize:12,color:"#78716c"}}>A 6-digit code sent to your email each time</span>
+              </span>
+              <span style={{color:"#7c3aed",fontSize:18}}>›</span>
+            </button>
+          </div>
+          <p style={{fontSize:11,color:"#b45309",background:"#fef9c3",padding:"7px 10px",borderRadius:7,lineHeight:1.5}}>
+            Email codes are convenient but less secure than an authenticator app. You can change this later in Settings.
+          </p>
         </>)}
 
         {/* ── Step 2a: MFA Intro ── */}

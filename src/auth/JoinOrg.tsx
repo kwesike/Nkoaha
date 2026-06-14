@@ -12,8 +12,8 @@ export default function JoinOrg() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token  = params.get("invite");
-    const orgId  = params.get("org");
+    const token  = params.get("invite") || "";
+    const orgId  = params.get("org") || "";
     const name   = params.get("name") || "the organisation";
     const email  = params.get("email") || "";
     setOrgName(name);
@@ -24,51 +24,71 @@ export default function JoinOrg() {
       return;
     }
 
-    let handled = false;
+    (async () => {
+      // If they already have a live session (existing user, or already
+      // logged in), process the invite directly.
+      const { data: sess } = await supabase.auth.getSession();
+      if (sess.session?.user) {
+        setStatus("joining");
+        await processInvite(sess.session.user.id, sess.session.user.email || email, orgId, token, name);
+        return;
+      }
 
-    async function tryJoin(userId: string, userEmail: string) {
-      if (handled) return;
-      handled = true;
+      // Otherwise create the account NOW with a temporary password, sign in to
+      // guarantee a live session, then process the invite. The user sets their
+      // REAL password on the next screen (MFASetupInvite step 1).
+      if (!email) {
+        setStatus("error");
+        setMessage("This invite link is missing an email address. Please ask the admin to resend.");
+        return;
+      }
       setStatus("joining");
-      await processInvite(userId, userEmail, orgId!, token!, name);
-    }
 
-    // ── Strategy 1: onAuthStateChange (fires when Supabase processes hash) ──
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (handled) return;
-        if (session?.user && (event === "SIGNED_IN" || event === "USER_UPDATED")) {
-          await tryJoin(session.user.id, session.user.email || email);
+      const tempPassword = `Tmp-${crypto.randomUUID()}`;
+      const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+        email, password: tempPassword,
+      });
+
+      if (signUpErr) {
+        // Account already exists from a previous attempt — try signing in is
+        // not possible (we don't know their password), so send them to log in.
+        if (signUpErr.message?.toLowerCase().includes("already")) {
+          setStatus("error");
+          setMessage("You already have an account with this email. Please log in, then click the invite link again.");
+        } else {
+          setStatus("error");
+          setMessage(signUpErr.message || "Could not create your account.");
         }
+        return;
       }
-    );
 
-    // ── Strategy 2: poll getSession every 500ms for up to 10s ──
-    let attempts = 0;
-    const poll = setInterval(async () => {
-      if (handled) { clearInterval(poll); return; }
-      attempts++;
-      const { data } = await supabase.auth.getSession();
-      if (data.session?.user) {
-        clearInterval(poll);
-        await tryJoin(data.session.user.id, data.session.user.email || email);
-      }
-      if (attempts >= 20) {
-        clearInterval(poll);
-        if (!handled) {
+      // Ensure a live session. If signUp didn't return one (email confirmation
+      // on), sign in with the temp password we just set.
+      let userId = signUpData.user?.id;
+      if (!signUpData.session) {
+        const { data: signInData, error: signInErr } =
+          await supabase.auth.signInWithPassword({ email, password: tempPassword });
+        if (signInErr || !signInData.user) {
           setStatus("error");
           setMessage(
-            "Could not verify your invite session. The link may have expired or already been used. " +
-            "Please ask the admin to send a new invite."
+            "Your account was created, but we couldn't start a session automatically. " +
+            "This usually means email confirmation is required. Please check your email, " +
+            "confirm, then click the invite link again."
           );
+          return;
         }
+        userId = signInData.user.id;
       }
-    }, 500);
 
-    return () => {
-      subscription.unsubscribe();
-      clearInterval(poll);
-    };
+      if (!userId) {
+        setStatus("error");
+        setMessage("Could not establish your account session. Please try the link again.");
+        return;
+      }
+
+      await processInvite(userId, email, orgId, token, name);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function processInvite(
@@ -76,7 +96,6 @@ export default function JoinOrg() {
     orgId: string, token: string, name: string
   ) {
     try {
-      // ── Verify invite. RLS must allow authenticated users to read by token. ──
       const { data: invite, error: inviteErr } = await supabase
         .from("organization_invites")
         .select("id,status,invite_token,expires_at")
@@ -94,21 +113,18 @@ export default function JoinOrg() {
         setMessage("Invite not found or already used. Please ask the admin to resend a fresh invite link.");
         return;
       }
-
       if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
         setStatus("error");
         setMessage("This invite link has expired. Please ask the admin to resend.");
         return;
       }
 
-      // ── Add the user to the org (set organization_id + role) ──
       const { error: profileErr } = await supabase
         .from("profiles")
         .update({ organization_id: orgId, role: "organization_member" })
         .eq("id", userId);
 
       if (profileErr) {
-        // Profile row may not exist yet — upsert it
         const { error: upsertErr } = await supabase.from("profiles").upsert({
           id: userId, email: userEmail,
           role: "organization_member", organization_id: orgId,
@@ -120,16 +136,11 @@ export default function JoinOrg() {
         }
       }
 
-      // ── Mark invite accepted (do this AFTER profile is updated) ──
       const { error: acceptErr } = await supabase.from("organization_invites")
         .update({ status: "accepted" })
         .eq("id", invite.id);
-      if (acceptErr) {
-        // Non-fatal — OrgMembersPage self-heals stale invites — but log it
-        console.warn("Could not mark invite accepted:", acceptErr.message);
-      }
+      if (acceptErr) console.warn("Could not mark invite accepted:", acceptErr.message);
 
-      // ── Notify owner ──
       const { data: org } = await supabase
         .from("organizations").select("owner_id,name").eq("id", orgId).single();
       if (org?.owner_id) {
@@ -143,23 +154,10 @@ export default function JoinOrg() {
       localStorage.setItem("nkoaha_role", "organization_member");
       localStorage.setItem("nkoaha_name", userEmail.split("@")[0]);
 
-      // If already accepted earlier, just route them in
-      if (invite.status === "accepted") {
-        setStatus("done");
-        setMessage(`You are already a member of ${name}.`);
-        const { data: factors } = await supabase.auth.mfa.listFactors();
-        const hasMFA = factors?.totp?.some((f: any) => f.status === "verified");
-        setTimeout(() => navigate(
-          hasMFA ? "/dashboard/organizationmembersdashboard" : "/mfa-setup",
-          { state: { destination: "/dashboard/organizationmembersdashboard" } }
-        ), 1500);
-        return;
-      }
-
       setStatus("done");
       setMessage(`Welcome to ${name}! Setting up your account…`);
 
-      // → MFA setup → member dashboard
+      // → MFASetupInvite: user sets their REAL password + picks verification → dashboard
       setTimeout(() => navigate("/mfa-setup", {
         state: { destination: "/dashboard/organizationmembersdashboard" }
       }), 1500);
@@ -179,8 +177,8 @@ export default function JoinOrg() {
 
         {status === "loading" && (<>
           <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
-          <h2>Joining {orgName || "organisation"}…</h2>
-          <p className="auth-subtitle">Verifying your invite link, please wait.</p>
+          <h2>Checking your invite…</h2>
+          <p className="auth-subtitle">One moment.</p>
         </>)}
 
         {status === "joining" && (<>

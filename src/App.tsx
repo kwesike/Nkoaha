@@ -4,6 +4,7 @@ import NavigationLoader from "./auth/NavigationLoader";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import DashboardLayout from "./dashboard/layout/DashboardLayout";
 
+
 // ── Lazy-loaded pages — only downloads when the route is visited ──
 const SignupSelect                 = lazy(() => import("./auth/SignupSelect"));
 const IndividualSignup             = lazy(() => import("./auth/IndividualSignup"));
@@ -11,6 +12,7 @@ const OrganizationSignup           = lazy(() => import("./auth/OrganizationSignu
 const Login                        = lazy(() => import("./auth/Login"));
 const MFASetup                     = lazy(() => import("./auth/MFASetup"));
 const MFAVerify                    = lazy(() => import("./auth/MFAVerify"));
+const EmailOtpVerify              = lazy(() => import("./auth/EmailOtpVerify"));
 const ForgotPassword               = lazy(() => import("./auth/ForgotPassword"));
 const ResetPassword                = lazy(() => import("./auth/ResetPassword"));
 const JoinOrg                      = lazy(() => import("./auth/JoinOrg"));
@@ -67,6 +69,7 @@ function App() {
           <Route path="/signup/organization"    element={<OrganizationSignup />} />
           <Route path="/mfa"                    element={<MFASetup />} />
           <Route path="/mfa-verify"             element={<MFAVerify />} />
+          <Route path="/email-otp-verify"       element={<EmailOtpVerify />} />
           <Route path="/forgot-password"        element={<ForgotPassword />} />
           <Route path="/reset-password"         element={<ResetPassword />} />
           <Route path="/join-org"               element={<JoinOrg />} />
