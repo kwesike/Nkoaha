@@ -202,5 +202,5 @@ export default function JoinOrg() {
         </>)}
       </div>
     </div>
-  );
+  )
 }
