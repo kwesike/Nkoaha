@@ -35,7 +35,6 @@ export default function MFASetupInvite() {
   const location  = useLocation();
 
   const [step, setStep]         = useState<Step>("password");
-  const [authMethod, setAuthMethod] = useState<"authenticator"|"email_otp">("authenticator");
   const [qrUrl, setQrUrl]       = useState("");
   const [secret, setSecret]     = useState("");
   const [factorId, setFactorId] = useState("");
@@ -74,7 +73,6 @@ export default function MFASetupInvite() {
 
   // ── Step 1.5: Save chosen verification method, then branch ──
   async function chooseMethod(method: "authenticator" | "email_otp") {
-    setAuthMethod(method);
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       await supabase.from("profiles").update({ auth_method: method }).eq("id", user.id);
