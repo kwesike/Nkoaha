@@ -308,16 +308,105 @@ export default function DrivePage() {
     await Promise.all([loadItems(currentFolder), loadUsage()]);
   }
 
+  // Resolve a Drive file's storage path to a working signed URL.
+  // New (unified) files live as 'docs/...' in the 'documents' bucket; legacy
+  // files (uploaded before unification) live as '{owner}/{itemId}' in the
+  // 'drive' bucket. Route by path shape, with a fallback to the other bucket.
+  async function signedDriveUrl(
+    storagePath: string, expires = 300, opts?: { download?: string }
+  ): Promise<string | null> {
+    const primary  = storagePath.startsWith("docs/") ? "documents" : "drive";
+    const fallback = primary === "documents" ? "drive" : "documents";
+    for (const bucket of [primary, fallback]) {
+      const { data } = await supabase.storage.from(bucket).createSignedUrl(storagePath, expires, opts);
+      if (data?.signedUrl) return data.signedUrl;
+    }
+    return null;
+  }
+
   async function downloadFile(item: DriveItem) {
     if (!item.storage_path) return;
     setMsg({ type: "info", text: "Preparing download…" });
-    // Linked-document files live in the 'documents' bucket (storage_path is the
-    // docs/... path there). Generate a signed URL from that bucket.
-    const { data, error } = await supabase.storage.from("documents").createSignedUrl(item.storage_path, 120, { download: item.name });
+    const url = await signedDriveUrl(item.storage_path, 120, { download: item.name });
     setMsg(null);
-    if (error || !data?.signedUrl) { setMsg({ type: "error", text: "Could not download: " + (error?.message || "unknown") }); return; }
-    const a = document.createElement("a"); a.href = data.signedUrl; a.download = item.name;
+    if (!url) { setMsg({ type: "error", text: "Could not download this file. It may have been removed." }); return; }
+    const a = document.createElement("a"); a.href = url; a.download = item.name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+
+  // Load JSZip on demand from CDN (no npm install needed — matches how the
+  // document page loads jsPDF/pdf.js).
+  function loadJsZip(): Promise<any> {
+    if ((window as any).JSZip) return Promise.resolve((window as any).JSZip);
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+      s.onload = () => resolve((window as any).JSZip);
+      s.onerror = () => reject(new Error("Could not load the zip library"));
+      document.head.appendChild(s);
+    });
+  }
+
+  // Download a whole folder as a .zip, preserving nested folder structure.
+  async function downloadFolder(folder: DriveItem) {
+    setBusy(true);
+    setMsg({ type: "info", text: `Zipping "${folder.name}"…` });
+    try {
+      const JSZip = await loadJsZip();
+      const zip = new JSZip();
+
+      // Walk the folder tree, collecting files with their relative paths.
+      // Each entry: { path: "Sub/Folder/name.pdf", storage_path }
+      const files: { path: string; storage_path: string }[] = [];
+      async function walk(parentId: string, prefix: string) {
+        const { data: kids } = await supabase.from("drive_items")
+          .select("id,kind,name,storage_path").eq("parent_id", parentId);
+        for (const k of (kids || [])) {
+          if (k.kind === "folder") {
+            await walk(k.id, `${prefix}${k.name}/`);
+          } else if (k.storage_path) {
+            files.push({ path: `${prefix}${k.name}`, storage_path: k.storage_path });
+          }
+        }
+      }
+      await walk(folder.id, "");
+
+      if (files.length === 0) {
+        setBusy(false);
+        setMsg({ type: "error", text: "That folder is empty — nothing to download." });
+        return;
+      }
+
+      // Fetch each file's bytes (via a short-lived signed URL) and add to the zip.
+      let added = 0;
+      for (const f of files) {
+        const url = await signedDriveUrl(f.storage_path, 300);
+        if (!url) continue;
+        const resp = await fetch(url);
+        if (!resp.ok) continue;
+        zip.file(f.path, await resp.blob());
+        added++;
+        setMsg({ type: "info", text: `Zipping "${folder.name}"… (${added}/${files.length})` });
+      }
+
+      if (added === 0) {
+        setBusy(false);
+        setMsg({ type: "error", text: "Could not read any files in that folder." });
+        return;
+      }
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${folder.name}.zip`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBusy(false);
+      setMsg(null);
+    } catch (e: any) {
+      setBusy(false);
+      setMsg({ type: "error", text: "Folder download failed: " + (e?.message || "unknown") });
+    }
   }
 
   async function deleteItem(item: DriveItem) {
@@ -488,6 +577,9 @@ export default function DrivePage() {
                     <div className="dr-menu" onClick={e => e.stopPropagation()}>
                       {item.kind === "file" && (
                         <button className="dr-menu-item" onClick={() => { setMenuFor(null); downloadFile(item); }}>⬇️ Download</button>
+                      )}
+                      {item.kind === "folder" && (
+                        <button className="dr-menu-item" onClick={() => { setMenuFor(null); downloadFolder(item); }}>⬇️ Download as zip</button>
                       )}
                       <button className="dr-menu-item" onClick={() => { setMenuFor(null); setRenameItem(item); setRenameVal(item.name); }}>✏️ Rename</button>
                       <button className="dr-menu-item" onClick={() => openMove(item)}>📦 Move</button>
