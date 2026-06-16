@@ -340,19 +340,31 @@ function DocxIframeEditor({ html, onSave, readOnly = false }: { html: string; on
     if (!readOnly) {
       const onChange = () => {
         if (saveTimer.current) clearTimeout(saveTimer.current);
-        saveTimer.current = setTimeout(() => { onSave(body.innerHTML); }, 600);
+        saveTimer.current = setTimeout(() => { onSave(body.innerHTML); }, 800);
       };
+      // 'input' alone catches every content change; 'keyup' was redundant and
+      // doubled the work on each keystroke.
       body.addEventListener("input", onChange);
-      body.addEventListener("keyup", onChange);
     }
-    const resize = () => {
+    // Resize without layout thrash: measure scrollHeight directly (no reset to
+    // 0px first) and only write a new height when it actually changed.
+    let lastH = 0;
+    const applyResize = () => {
       if (!iframe || !doc.body) return;
-      iframe.style.height = "0px";
-      iframe.style.height = Math.max(912, doc.body.scrollHeight + 2) + "px";
+      const h = Math.max(912, doc.body.scrollHeight + 2);
+      if (h !== lastH) { lastH = h; iframe.style.height = h + "px"; }
     };
-    new (window as any).ResizeObserver(resize).observe(doc.body);
-    new MutationObserver(resize).observe(doc.body, { childList:true, subtree:true, characterData:true });
-    resize();
+    // Debounce resize so it runs after a brief pause, not on every character.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const resize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(applyResize, 120);
+    };
+    // Observe structural changes only (not characterData) — typing within a
+    // node doesn't need a resize until the box actually grows, which fires
+    // childList/subtree changes anyway on new lines.
+    new MutationObserver(resize).observe(doc.body, { childList:true, subtree:true });
+    applyResize();
   }, [html, onSave, readOnly]);
 
   useEffect(() => {

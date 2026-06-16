@@ -5,6 +5,7 @@ import ProtectedRoute from "./auth/ProtectedRoute";
 import DashboardLayout from "./dashboard/layout/DashboardLayout";
 
 
+
 // ── Lazy-loaded pages — only downloads when the route is visited ──
 const SignupSelect                 = lazy(() => import("./auth/SignupSelect"));
 const IndividualSignup             = lazy(() => import("./auth/IndividualSignup"));
@@ -30,6 +31,7 @@ const BillingPage                  = lazy(() => import("./dashboard/Billingpage"
 const SettingsPage                 = lazy(() => import("./dashboard/Settingspage"));
 const InboxPage                    = lazy(() => import("./dashboard/inbox/InboxPage"));
 const DocumentsPage                = lazy(() => import("./dashboard/documents/DocumentsPage"));
+const DrivePage                    = lazy(() => import("./dashboard/DrivePage"));
 
 const AdminOverviewPage            = lazy(() => import("./admin/AdminOverviewPage"));
 const AdminUsersPage               = lazy(() => import("./admin/AdminUsersPage"));
@@ -99,6 +101,9 @@ function App() {
           } />
           <Route path="/dashboard/settings" element={
             <ProtectedRoute><SettingsPage /></ProtectedRoute>
+          } />
+          <Route path="/dashboard/drive" element={
+            <ProtectedRoute><DrivePage /></ProtectedRoute>
           } />
 
           {/* ── ADMIN PANEL ── */}

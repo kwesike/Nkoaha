@@ -32,12 +32,17 @@ const Icons = {
       <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
     </svg>
   ),
-  Send: () => (
+  Drive: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="22" y1="2" x2="11" y2="13"/>
-      <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
     </svg>
   ),
+  //Send: () => (
+    //<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      //<line x1="22" y1="2" x2="11" y2="13"/>
+      //<polygon points="22 2 15 22 11 13 2 9 22 2"/>
+    //</svg>
+  //),
   Inbox: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
@@ -71,6 +76,11 @@ const Icons = {
       <line x1="1" y1="10" x2="23" y2="10"/>
     </svg>
   ),
+  //Support: () => (
+    //<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      //<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    //</svg>
+  //),
   Settings: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3"/>
@@ -421,13 +431,17 @@ export default function Sidebar({ role }: SidebarProps) {
     if (role === "individual") return [
       { label: "Overview",  icon: <Icons.Overview />,  path: "/dashboard/individualdashboard" },
       { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/individual" },
+      { label: "Drive",     icon: <Icons.Drive />,     path: "/dashboard/drive" },
+      //{ label: "Send",      icon: <Icons.Send />,      path: "/dashboard/send" },
       { label: "Inbox",     icon: <Icons.Inbox />,     path: "/dashboard/inbox/inboxpage" },
       { label: "Billing",   icon: <Icons.Billing />,   path: "/dashboard/billing" },
       { label: "Settings",  icon: <Icons.Settings />,  path: "/dashboard/settings" },
+      //{ label: "Support Inbox", icon: <Icons.Support />, path: "/dashboard/support-inbox" },
     ];
     if (role === "organization") return [
       { label: "Overview",     icon: <Icons.Overview />,      path: "/dashboard/organizationdashboard" },
       { label: "Documents",    icon: <Icons.Documents />,     path: "/dashboard/organization" },
+      { label: "Drive",        icon: <Icons.Drive />,         path: "/dashboard/drive" },
       { label: "Inbox",        icon: <Icons.Inbox />,         path: "/dashboard/inbox/inboxpage" },
       { label: "Members",      icon: <Icons.Members />,       path: "/dashboard/org/members" },
       { label: "Audit Logs",   icon: <Icons.Audit />,         path: "/dashboard/org/audit" },
@@ -437,7 +451,9 @@ export default function Sidebar({ role }: SidebarProps) {
     ];
     return [
       { label: "Overview",  icon: <Icons.Overview />,  path: "/dashboard/organizationmembersdashboard" },
-      { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/member" },   
+      { label: "Documents", icon: <Icons.Documents />, path: "/dashboard/member" },
+      { label: "Drive",     icon: <Icons.Drive />,     path: "/dashboard/drive" },
+      //{ label: "Send",      icon: <Icons.Send />,      path: "/dashboard/send" },
       { label: "Inbox",     icon: <Icons.Inbox />,     path: "/dashboard/inbox/inboxpage" },
       { label: "Settings",  icon: <Icons.Settings />,  path: "/dashboard/settings" },
     ];

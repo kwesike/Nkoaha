@@ -63,14 +63,15 @@ export default function IndividualSignup() {
     setLoading(false);
 
     // ── Route by chosen verification method ──
+    // Both paths must pass through onboarding (/individual) so signature +
+    // profile picture are always collected. Onboarding self-gates on the
+    // onboarding_completed flag, so it shows the form only if not yet done.
     if (authMethod === "authenticator") {
-      // Existing flow: set up the authenticator app
+      // Set up the authenticator app first; MFASetup continues to onboarding.
       navigate("/mfa");
     } else {
-      // Email OTP: no app to set up — their signup email IS their OTP address.
-      // Go straight to the dashboard; codes are requested when they next
-      // log in or approve a document.
-      navigate("/dashboard/individualdashboard");
+      // Email OTP: no app to set up — go straight to onboarding.
+      navigate("/individual");
     }
   };
 

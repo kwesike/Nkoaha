@@ -209,8 +209,8 @@ export default function IndividualDashboard() {
     /* ── Primary: activity_logs table ── */
     const { data: logs, error: logsError } = await supabase
       .from("activity_logs")
-      .select("id, action, document_id, document_title, metadata, created_at")
-      .eq("recipient_id", user.id)
+      .select("id, action, document_id, metadata, created_at")
+      .eq("user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(15);
 
