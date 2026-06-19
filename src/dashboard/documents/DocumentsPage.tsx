@@ -9,14 +9,26 @@ import { EMPTY_DOC } from "./emptyDoc";
 type SaveStatus = "saved" | "saving" | "unsaved";
 type DocFormat  = "docx" | "pdf" | "new";
 
+interface TableCell {
+  text: string;
+  bold?: boolean;
+  align?: "left" | "center" | "right";
+  bg?: string;            // cell background colour (hex) or undefined for none
+}
+interface TableData {
+  rows: number;
+  cols: number;
+  cells: TableCell[][];   // [row][col]
+}
 interface PdfOverlay {
   id: string; pageIdx: number;
   x: number; y: number;
-  type: "text" | "date" | "signature" | "image";
+  type: "text" | "date" | "signature" | "image" | "table";
   content: string;
   fontSize: number; // px — user can resize with scroll wheel or +/- buttons
   rotation?: number; // degrees 0-359 for text overlays
   step?: number;    // route_order of the recipient who placed this overlay — locked to future recipients
+  tableData?: TableData; // present when type === "table"
 }
 interface DocumentItem {
   id: string; title: string; fileUrl: string;
@@ -148,6 +160,17 @@ const STYLES = `
   .dp-ctx-item:hover{background:var(--accent-light);color:var(--accent)}
   /* Locked overlay — previous recipient's work */
   .dp-pdf-overlay-item.locked{cursor:not-allowed!important}
+  .dp-ov-table{border-collapse:collapse;background:rgba(255,255,255,.92);box-shadow:0 0 0 1px rgba(124,58,237,.35);font-family:var(--font);color:#1c1917}
+  .dp-ov-table td{border:1px solid #555;padding:3px 7px;min-width:36px;outline:none;vertical-align:top;line-height:1.3}
+  .dp-ov-table td:focus{box-shadow:inset 0 0 0 2px var(--accent)}
+  .dp-ov-table-handle{display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:4px 4px 0 0;cursor:move;user-select:none;position:absolute;top:-18px;left:0}
+  .dp-ov-table-ctrls{position:absolute;top:-18px;right:0;display:flex;gap:3px}
+  .dp-ov-table-ctrls button{background:rgba(0,0,0,.72);color:#fff;border:none;border-radius:4px;font-size:10px;font-family:var(--mono);padding:2px 5px;cursor:pointer}
+  .dp-ov-table-ctrls button:hover{background:var(--accent)}
+  .dp-ov-cell-bar{position:absolute;bottom:-26px;left:0;display:flex;align-items:center;gap:3px;background:rgba(0,0,0,.78);border-radius:5px;padding:3px 5px;z-index:14}
+  .dp-ov-cell-bar button{background:none;border:none;color:#fff;font-size:11px;cursor:pointer;padding:1px 4px;border-radius:3px;line-height:1}
+  .dp-ov-cell-bar button.on{background:var(--accent)}
+  .dp-ov-cell-bar button:hover{background:rgba(255,255,255,.2)}
   .dp-pdf-overlay-item.locked .dp-overlay-resize{display:none!important}
   .dp-pdf-overlay-item.locked .dp-pdf-overlay-del{display:none!important}
   /* Comments dialog */
@@ -523,7 +546,7 @@ export default function DocumentsPage() {
   const docxPdfCanvasRefs = useRef<(HTMLCanvasElement|null)[]>([]);
   const [pdfDoc, setPdfDoc]           = useState<any>(null);
   const [pdfOverlays, setPdfOverlays] = useState<PdfOverlay[]>([]);
-  const [pdfTool, setPdfTool]         = useState<"none"|"text"|"date"|"signature">("none");
+  const [pdfTool, setPdfTool]         = useState<"none"|"text"|"date"|"signature"|"table">("none");
   const [dragOverlay, setDragOverlay] = useState<string|null>(null);
   const [dragStart, setDragStart]     = useState<{x:number;y:number}>({x:0,y:0});
   const [focusId, setFocusId]         = useState<string|null>(null);
@@ -546,6 +569,40 @@ export default function DocumentsPage() {
     if(ov.step===undefined||ov.step===null) return false; // legacy overlay — allow
     return ov.step < myRoute.route_order; // placed by someone earlier in the chain
   };
+
+  // ── Table overlay editing ──
+  // Which cell is selected (for the styling toolbar): "<overlayId>:<r>:<c>" or null
+  const [activeCell, setActiveCell] = useState<string|null>(null);
+
+  // Apply a transform to a table overlay's tableData (in whichever overlay array holds it).
+  const updateTable=(ovId:string, fn:(t:TableData)=>TableData)=>{
+    const apply=(prev:PdfOverlay[])=>prev.map(o=>{
+      if(o.id!==ovId||!o.tableData) return o;
+      return {...o, tableData: fn(o.tableData)};
+    });
+    setPdfOverlays(apply);
+    setDocxOverlays(apply);
+    setSaveStatus("unsaved");
+  };
+  const mkEmptyCell=():TableCell=>({text:"",align:"left"});
+  const tableAddRow=(ovId:string)=>updateTable(ovId,t=>({
+    ...t, rows:t.rows+1, cells:[...t.cells, Array.from({length:t.cols},mkEmptyCell)],
+  }));
+  const tableDelRow=(ovId:string)=>updateTable(ovId,t=>t.rows<=1?t:({
+    ...t, rows:t.rows-1, cells:t.cells.slice(0,-1),
+  }));
+  const tableAddCol=(ovId:string)=>updateTable(ovId,t=>({
+    ...t, cols:t.cols+1, cells:t.cells.map(row=>[...row,mkEmptyCell()]),
+  }));
+  const tableDelCol=(ovId:string)=>updateTable(ovId,t=>t.cols<=1?t:({
+    ...t, cols:t.cols-1, cells:t.cells.map(row=>row.slice(0,-1)),
+  }));
+  const tableSetCell=(ovId:string,r:number,c:number,patch:Partial<TableCell>)=>updateTable(ovId,t=>{
+    const cells=t.cells.map(row=>row.map(cell=>({...cell})));
+    if(cells[r]&&cells[r][c]) cells[r][c]={...cells[r][c],...patch};
+    return {...t,cells};
+  });
+
   // Auth confirmation modal for approve actions
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authAction, setAuthAction] = useState<"approve"|"save"|null>(null);
@@ -2232,23 +2289,63 @@ export default function DocumentsPage() {
       type SnapItem = {
         ov: PdfOverlay; r: DOMRect; cs: CSSStyleDeclaration;
         ow: number; oh: number;
+        cells?: { r: DOMRect; cs: CSSStyleDeclaration; text: string }[]; // for tables
       };
       const snapItems: SnapItem[] = ovs
         .filter(o=>o.pageIdx===i)
         .map(ov=>{
           const el=stage?.querySelector(`[data-ovid="${ov.id}"]`) as HTMLElement|null;
           if(!el) return null;
+          let cells: { r: DOMRect; cs: CSSStyleDeclaration; text: string }[] | undefined;
+          if(ov.type==="table"){
+            const tds=Array.from(el.querySelectorAll("td")) as HTMLElement[];
+            cells=tds.map(td=>({ r: td.getBoundingClientRect(), cs: window.getComputedStyle(td), text: td.textContent||"" }));
+          }
           return {
             ov,
             r:  el.getBoundingClientRect(),
             cs: window.getComputedStyle(el),
             ow: el.offsetWidth,
             oh: el.offsetHeight,
+            cells,
           };
         })
         .filter(Boolean) as SnapItem[];
 
-      for(const {ov,r,cs,ow,oh} of snapItems){
+      for(const {ov,r,cs,ow,oh,cells} of snapItems){
+        // ── Tables: draw each cell (bg, border, text) in canvas-relative px.
+        //    Driven off live <td> rects, so column widths / row heights / any
+        //    future merges match the on-screen layout exactly. No rotation. ──
+        if(ov.type==="table" && cells){
+          for(const cell of cells){
+            const x=(cell.r.left-canvasRect.left)*px;
+            const y=(cell.r.top -canvasRect.top )*px;
+            const w=cell.r.width*px;
+            const h=cell.r.height*px;
+            // Background
+            const bg=cell.cs.backgroundColor;
+            if(bg && bg!=="rgba(0, 0, 0, 0)" && bg!=="transparent"){
+              ctx.fillStyle=bg; ctx.fillRect(x,y,w,h);
+            }
+            // Border
+            ctx.strokeStyle="#555"; ctx.lineWidth=Math.max(1,1*px);
+            ctx.strokeRect(x,y,w,h);
+            // Text (single line; wraps are uncommon in these cells)
+            const fs=(parseFloat(cell.cs.fontSize)||13)*px;
+            ctx.font=`${cell.cs.fontStyle} ${cell.cs.fontWeight} ${fs}px ${cell.cs.fontFamily}`;
+            ctx.fillStyle=cell.cs.color||"#1c1917";
+            ctx.textBaseline="middle";
+            const padX=parseFloat(cell.cs.paddingLeft)||7;
+            const align=cell.cs.textAlign;
+            let tx=x+padX*px;
+            ctx.textAlign="left";
+            if(align==="center"){ ctx.textAlign="center"; tx=x+w/2; }
+            else if(align==="right"){ ctx.textAlign="right"; tx=x+w-padX*px; }
+            ctx.fillText(cell.text, tx, y+h/2);
+          }
+          continue; // table fully drawn; skip the rotation/text path below
+        }
+
         // Element center relative to the canvas top-left (CSS px), stable when rotated
         const cxCss=(r.left-canvasRect.left)+r.width /2;
         const cyCss=(r.top -canvasRect.top )+r.height/2;
@@ -2793,7 +2890,7 @@ export default function DocumentsPage() {
             {activeDoc.format==="pdf"&&pdfDoc&&(<>
               {!(activeDoc as any).isOrgDoc && <div className="dp-pdf-toolbar">
                 <span className="dp-pdf-toolbar-label">Place on document:</span>
-                {(["text","date","signature","image"] as const).map(tool=>(
+                {(["text","date","signature","image","table"] as const).map(tool=>(
                   <button key={tool} className={`dp-pdf-tool ${pdfTool===tool?"active":""}`} onClick={()=>{
                     if(tool==="image"){
                       imageInputTarget.current="pdf";
@@ -2807,6 +2904,7 @@ export default function DocumentsPage() {
                     {tool==="date"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Date</>}
                     {tool==="signature"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 19.5v.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8.5L18 5.5"/><path d="M8 18h1l9.1-9.1-1-1L8 17z"/></svg> Signature</>}
                     {tool==="image"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg> Image</>}
+                    {tool==="table"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="12" y1="3" x2="12" y2="21"/></svg> Table</>}
                   </button>
                 ))}
                 {pdfTool!=="none"&&<span className="dp-pdf-tool-hint">Click anywhere on the page to place</span>}
@@ -2838,10 +2936,21 @@ export default function DocumentsPage() {
                           if(!prof?.signature_url){alert("No signature uploaded yet.");return;}
                           content=await resolveStorageUrl(prof.signature_url);
                           if(!content){alert("Could not load signature.");return;}
+                        }else if(pdfTool==="table"){
+                          content="";
                         }else{
                           content="Text here…";
                         }
                         const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                        if(pdfTool==="table"){
+                          // Default 2×2 table with empty cells.
+                          const mkCell=():TableCell=>({text:"",align:"left"});
+                          const tableData:TableData={rows:2,cols:2,cells:[[mkCell(),mkCell()],[mkCell(),mkCell()]]};
+                          setPdfOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:"table",content:"",fontSize:13,tableData,step:myRoute?.route_order??0}]);
+                          setSaveStatus("unsaved");
+                          setPdfTool("none");
+                          return;
+                        }
                         setPdfOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:pdfTool,content,fontSize:16,step:myRoute?.route_order??0}]);
                         setSaveStatus("unsaved");
                         if(pdfTool==="text")setFocusId(newId);
@@ -2873,6 +2982,66 @@ export default function DocumentsPage() {
                               onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
                           ):ov.type==="date"?(
                             <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,display:"inline-block"}}>{ov.content}</span>
+                          ):ov.type==="table"&&ov.tableData?(
+                            <div data-ovid={ov.id} style={{position:"relative"}}>
+                              {!isLocked(ov)&&(
+                                <div className="dp-ov-table-handle"
+                                  title="Drag to move table"
+                                  onMouseDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}>
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="6" r="1.6"/><circle cx="12" cy="6" r="1.6"/><circle cx="18" cy="6" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></svg>
+                                  <span>Move</span>
+                                </div>
+                              )}
+                              <table className="dp-ov-table" style={{fontSize:ov.fontSize||13}}>
+                                <tbody>
+                                  {ov.tableData.cells.map((row,r)=>(
+                                    <tr key={r}>
+                                      {row.map((cell,c)=>(
+                                        <td key={c} data-cell={`${r}:${c}`}
+                                          contentEditable={!isLocked(ov)} suppressContentEditableWarning
+                                          onFocus={()=>setActiveCell(`${ov.id}:${r}:${c}`)}
+                                          onMouseDown={e=>e.stopPropagation()}
+                                          onClick={e=>e.stopPropagation()}
+                                          onBlur={e=>tableSetCell(ov.id,r,c,{text:e.currentTarget.textContent||""})}
+                                          style={{
+                                            fontWeight:cell.bold?700:400,
+                                            textAlign:cell.align||"left",
+                                            background:cell.bg||"transparent",
+                                            minWidth:36,
+                                          }}>{cell.text}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              {!isLocked(ov)&&(
+                                <div className="dp-ov-table-ctrls" onMouseDown={e=>e.stopPropagation()}>
+                                  <button title="Add row"    onClick={e=>{e.stopPropagation();tableAddRow(ov.id);}}>+Row</button>
+                                  <button title="Remove row" onClick={e=>{e.stopPropagation();tableDelRow(ov.id);}}>−Row</button>
+                                  <button title="Add column"    onClick={e=>{e.stopPropagation();tableAddCol(ov.id);}}>+Col</button>
+                                  <button title="Remove column" onClick={e=>{e.stopPropagation();tableDelCol(ov.id);}}>−Col</button>
+                                </div>
+                              )}
+                              {!isLocked(ov)&&activeCell&&activeCell.startsWith(ov.id+":")&&(()=>{
+                                const [, rs, csi]=activeCell.split(":"); const r=+rs, c=+csi;
+                                const cell=ov.tableData!.cells[r]?.[c];
+                                if(!cell) return null;
+                                return (
+                                  <div className="dp-ov-cell-bar" onMouseDown={e=>e.stopPropagation()}>
+                                    <button className={cell.bold?"on":""} title="Bold" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{bold:!cell.bold});}}><b>B</b></button>
+                                    <button className={cell.align==="left"?"on":""} title="Left" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"left"});}}>⬅</button>
+                                    <button className={cell.align==="center"?"on":""} title="Center" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"center"});}}>⬌</button>
+                                    <button className={cell.align==="right"?"on":""} title="Right" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"right"});}}>➡</button>
+                                    <label title="Cell background" style={{display:"inline-flex",alignItems:"center"}}>
+                                      <input type="color" value={cell.bg||"#ffffff"} onClick={e=>e.stopPropagation()}
+                                        onChange={e=>tableSetCell(ov.id,r,c,{bg:e.target.value})}
+                                        style={{width:20,height:18,padding:0,border:"none",background:"none",cursor:"pointer"}}/>
+                                    </label>
+                                    <button title="Clear background" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{bg:undefined});}}>✕bg</button>
+                                  </div>
+                                );
+                              })()}
+                            </div>
                           ):(
                             <div data-ovid={ov.id} ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable={!isLocked(ov)} suppressContentEditableWarning
                               className="dp-pdf-overlay-text"

@@ -13,6 +13,9 @@ interface DriveItem {
   mime_type: string | null;
   storage_path: string | null;
   document_id: string | null;
+  owner_id: string;
+  is_member_root?: boolean;
+  member_id?: string | null;
   created_at: string;
 }
 interface Crumb { id: string | null; name: string; }
@@ -102,6 +105,7 @@ export default function DrivePage() {
   const [crumbs, setCrumbs]     = useState<Crumb[]>([{ id: null, name: "My Drive" }]);
   const [orgId, setOrgId]       = useState<string | null>(null);
   const [role, setRole]         = useState<string>("individual");
+  const [myUserId, setMyUserId] = useState<string>("");
   const [usage, setUsage]       = useState<{ used: number; limit: number; scope: string } | null>(null);
 
   const [menuFor, setMenuFor]   = useState<string | null>(null);
@@ -131,18 +135,90 @@ export default function DrivePage() {
   async function init() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setLoading(false); return; }
+    setMyUserId(user.id);
     // Determine org context (owner or member) + role for editor routing.
     const { data: ownedOrg } = await supabase.from("organizations").select("id").eq("owner_id", user.id).maybeSingle();
-    const { data: prof } = await supabase.from("profiles").select("organization_id,role").eq("id", user.id).maybeSingle();
+    const { data: prof } = await supabase.from("profiles").select("organization_id,role,email").eq("id", user.id).maybeSingle();
+    // Membership lives in organization_members (source of truth), not always on
+    // profiles.organization_id — check it for the member branch.
+    const { data: membership } = await supabase.from("organization_members")
+      .select("organization_id,role").eq("user_id", user.id).maybeSingle();
+    const memberOrgId = membership?.organization_id || prof?.organization_id || null;
+
     if (ownedOrg?.id) {
+      // ── ORG OWNER ──
       setOrgId(ownedOrg.id);
       setRole("organization");
+      // Self-healing: ensure every current member has an email-named root folder.
+      await ensureMemberFolders(ownedOrg.id);
+      await Promise.all([loadItems(null), loadUsage()]);
+    } else if (memberOrgId) {
+      // ── ORG MEMBER ──
+      setOrgId(memberOrgId);
+      setRole(membership?.role === "admin" || membership?.role === "member" ? "organization_member" : (prof?.role || "organization_member"));
+      // Find (or create) this member's own root folder, and start inside it.
+      const myFolderId = await ensureMyMemberFolder(memberOrgId, user.id, prof?.email || user.email || "member");
+      if (myFolderId) {
+        setCrumbs([{ id: null, name: "My Drive" }, { id: myFolderId, name: prof?.email || "My Folder" }]);
+        await Promise.all([loadItems(myFolderId), loadUsage()]);
+      } else {
+        await Promise.all([loadItems(null), loadUsage()]);
+      }
     } else {
-      setOrgId(prof?.organization_id || null);
+      // ── INDIVIDUAL ──
+      setOrgId(null);
       setRole(prof?.role || "individual");
+      await Promise.all([loadItems(null), loadUsage()]);
     }
-    await Promise.all([loadItems(null), loadUsage()]);
     setLoading(false);
+  }
+
+  // Ensure a single member's email-named root folder exists; returns its id.
+  async function ensureMyMemberFolder(orgId: string, memberId: string, email: string): Promise<string | null> {
+    const { data: existing } = await supabase.from("drive_items")
+      .select("id").eq("org_id", orgId).eq("member_id", memberId).eq("is_member_root", true).maybeSingle();
+    if (existing?.id) return existing.id;
+    const { data: created } = await supabase.from("drive_items").insert({
+      owner_id: memberId, org_id: orgId, parent_id: null,
+      kind: "folder", name: email, is_member_root: true, member_id: memberId,
+    }).select("id").single();
+    return created?.id || null;
+  }
+
+  // Org owner: ensure EVERY member of the org has an email-named root folder.
+  async function ensureMemberFolders(orgId: string) {
+    // Membership is tracked two ways across orgs: profiles.organization_id AND
+    // organization_members. Gather from BOTH and dedupe so it works either way.
+    const [{ data: profMembers }, { data: omMembers }] = await Promise.all([
+      supabase.from("profiles").select("id,email").eq("organization_id", orgId),
+      supabase.from("organization_members").select("user_id").eq("organization_id", orgId),
+    ]);
+    const ids = new Set<string>();
+    const emailById = new Map<string, string>();
+    for (const p of (profMembers || [])) { ids.add(p.id); if (p.email) emailById.set(p.id, p.email); }
+    const omIds = (omMembers || []).map((r: any) => r.user_id).filter(Boolean);
+    for (const id of omIds) ids.add(id);
+    // Resolve emails for any org_members ids we don't have yet.
+    const needEmail = omIds.filter((id: string) => !emailById.has(id));
+    if (needEmail.length) {
+      const { data: extra } = await supabase.from("profiles").select("id,email").in("id", needEmail);
+      for (const p of (extra || [])) if (p.email) emailById.set(p.id, p.email);
+    }
+    // Exclude the org owner — the owner is not a "member" with their own folder.
+    const { data: orgRow } = await supabase.from("organizations").select("owner_id").eq("id", orgId).maybeSingle();
+    if (orgRow?.owner_id) ids.delete(orgRow.owner_id);
+    if (!ids.size) return;
+    // Which members already have a member-root folder?
+    const { data: existing } = await supabase.from("drive_items")
+      .select("member_id").eq("org_id", orgId).eq("is_member_root", true);
+    const have = new Set((existing || []).map((r: any) => r.member_id).filter(Boolean));
+    const missing = [...ids].filter((id) => !have.has(id));
+    if (!missing.length) return;
+    const rows = missing.map((id) => ({
+      owner_id: id, org_id: orgId, parent_id: null,
+      kind: "folder", name: emailById.get(id) || "member", is_member_root: true, member_id: id,
+    }));
+    await supabase.from("drive_items").insert(rows);
   }
 
   // Route to the document page (role-specific) and tell it which document to open.
@@ -151,18 +227,23 @@ export default function DrivePage() {
       setMsg({ type: "error", text: "This file isn't linked to an editable document. Re-upload it to the Drive." });
       return;
     }
-    // The Drive is the durable home: if the document was soft-deleted on the
-    // document page, opening it from the Drive restores it so it opens normally.
-    const { data: doc } = await supabase.from("documents")
-      .select("status").eq("id", item.document_id).maybeSingle();
-    if (doc?.status === "deleted") {
-      await supabase.from("documents").update({ status: "draft" }).eq("id", item.document_id);
+    // If this isn't the viewer's own document (e.g. org owner opening a member's
+    // doc), open READ-ONLY — view/download/print only, no edit, no restore.
+    const readOnly = item.owner_id !== myUserId;
+    if (!readOnly) {
+      // Owner of the doc: the Drive is the durable home, so opening a
+      // soft-deleted doc restores it. (Only the owner may mutate.)
+      const { data: doc } = await supabase.from("documents")
+        .select("status").eq("id", item.document_id).maybeSingle();
+      if (doc?.status === "deleted") {
+        await supabase.from("documents").update({ status: "draft" }).eq("id", item.document_id);
+      }
     }
     const dest =
       role === "organization" ? "/dashboard/organization" :
       role === "organization_member" ? "/dashboard/member" :
       "/dashboard/individual";
-    navigate(dest, { state: { openDocId: item.document_id } });
+    navigate(dest, { state: { openDocId: item.document_id, readOnly } });
   }
 
   const loadUsage = useCallback(async () => {
@@ -581,15 +662,25 @@ export default function DrivePage() {
                       {item.kind === "folder" && (
                         <button className="dr-menu-item" onClick={() => { setMenuFor(null); downloadFolder(item); }}>⬇️ Download as zip</button>
                       )}
-                      <button className="dr-menu-item" onClick={() => { setMenuFor(null); setRenameItem(item); setRenameVal(item.name); }}>✏️ Rename</button>
-                      <button className="dr-menu-item" onClick={() => openMove(item)}>📦 Move</button>
-                      <button className="dr-menu-item danger" onClick={() => deleteItem(item)}>🗑️ Delete</button>
+                      {/* Mutating actions ONLY for the item's owner. The org owner
+                          viewing member content sees view/download only. */}
+                      {item.owner_id === myUserId && (
+                        <>
+                          {!item.is_member_root && (
+                            <>
+                              <button className="dr-menu-item" onClick={() => { setMenuFor(null); setRenameItem(item); setRenameVal(item.name); }}>✏️ Rename</button>
+                              <button className="dr-menu-item" onClick={() => openMove(item)}>📦 Move</button>
+                            </>
+                          )}
+                          <button className="dr-menu-item danger" onClick={() => deleteItem(item)}>🗑️ Delete</button>
+                        </>
+                      )}
                     </div>
                   )}
-                  <div className="dr-card-icon" style={{ fontSize: 38 }}>{ic.emoji}</div>
+                  <div className="dr-card-icon" style={{ fontSize: 38 }}>{item.is_member_root ? "👤" : ic.emoji}</div>
                   <div className="dr-card-name">{item.name}</div>
                   <div className="dr-card-sub">
-                    {item.kind === "folder" ? "Folder" : fmtBytes(item.size_bytes)}
+                    {item.is_member_root ? "Member folder" : item.kind === "folder" ? "Folder" : fmtBytes(item.size_bytes)}
                   </div>
                 </div>
               );
