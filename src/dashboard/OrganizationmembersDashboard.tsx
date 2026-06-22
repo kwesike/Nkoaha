@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
-
+//import DocumentCanvas from "../components/canvas/DocumentCanvas";
 
 /* ─── STYLES ─── */
 const STYLES = `
@@ -113,17 +113,29 @@ export default function OrganizationmemberDashboard() {
         setOrgName(org?.name || "");
       }
 
-      // Load docs + assigned routes in parallel
+      // Load docs + assigned routes in parallel.
+      // NOTE: we fetch routes WITHOUT embedding documents(...) — that embed was
+      // 400ing (PostgREST couldn't resolve the document_routes→documents
+      // relationship). Fetch titles in a second query and attach them.
       const [docsRes, routesRes] = await Promise.all([
         supabase.from("documents")
           .select("id,status").eq("owner_id", user.id).neq("status", "deleted"),
         supabase.from("document_routes")
-          .select("id,status,documents(id,title)")
+          .select("id,status,document_id")
           .eq("recipient_id", user.id),
       ]);
 
       const docs   = docsRes.data   || [];
-      const routes = routesRes.data || [];
+      let   routes = (routesRes.data || []) as any[];
+
+      // Attach document titles via a separate lookup (avoids the embed 400).
+      const routeDocIds = [...new Set(routes.map((r: any) => r.document_id).filter(Boolean))];
+      if (routeDocIds.length) {
+        const { data: routeDocs } = await supabase.from("documents")
+          .select("id,title").in("id", routeDocIds);
+        const titleById = new Map((routeDocs || []).map((d: any) => [d.id, d.title]));
+        routes = routes.map((r: any) => ({ ...r, documents: { id: r.document_id, title: titleById.get(r.document_id) } }));
+      }
       const pending = routes.filter((r: any) => r.status === "pending");
 
       setStats({
@@ -196,14 +208,6 @@ export default function OrganizationmemberDashboard() {
           </div>
         )}
 
-        {/* ── WORKSPACE — your existing component ── */}
-        <h2 style={{
-          padding: "0 28px 12px",
-          fontSize: 16, fontWeight: 600, color: "#1c1917",
-          fontFamily: "'DM Sans', sans-serif",
-        }}>
-          Workspace
-        </h2>
         
 
       </div>

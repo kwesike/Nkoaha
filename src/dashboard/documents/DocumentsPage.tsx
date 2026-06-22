@@ -561,6 +561,10 @@ export default function DocumentsPage() {
   const [commentSending, setCommentSending] = useState(false);
   const [currentUserId, setCurrentUserId]   = useState("");
   const [isInitiator, setIsInitiator]       = useState(false);
+  // Fork-on-edit: set when a member opens an EDIT-granted doc read-only and may
+  // "Edit a copy" (forks a duplicate into their folder; original untouched).
+  const [forkCtx, setForkCtx] = useState<{ sourceDocId: string; folderId: string | null } | null>(null);
+  const [forking, setForking] = useState(false);
 
   // Returns true if this overlay was placed by a previous recipient and must not be touched
   const isLocked=(ov:PdfOverlay):boolean=>{
@@ -685,11 +689,21 @@ export default function DocumentsPage() {
       const allDocs=[...owned,...routedDocs];
       setDocuments(allDocs);
 
-      // Auto-open document if navigated here with openDocId in state
+      // Auto-open document if navigated here with openDocId in state.
+      // If readOnly is set (e.g. org owner opening a member's document from the
+      // Drive), open through the read-only path — view/download/print, no edit.
       const openDocId=(location.state as any)?.openDocId;
+      const openReadOnly=(location.state as any)?.readOnly;
+      const canFork=(location.state as any)?.canForkEdit;
+      const forkFolder=(location.state as any)?.myFolderId;
       if(openDocId){
-        const target=allDocs.find((d:any)=>d.id===openDocId);
-        if(target) setTimeout(()=>openDocument(target),100);
+        const target=allDocs.find((d:any)=>d.id===openDocId)
+          || { id: openDocId, title: "Document", fileUrl: "", format: "pdf" as DocFormat, pages: 1 };
+        // Remember fork context so the "Edit a copy" button can act.
+        if(canFork){ setForkCtx({ sourceDocId: openDocId, folderId: forkFolder || null }); }
+        else { setForkCtx(null); }
+        if(openReadOnly||canFork) setTimeout(()=>openOrgDocument(target),100);
+        else if(allDocs.find((d:any)=>d.id===openDocId)) setTimeout(()=>openDocument(target),100);
       }
 
       // ── Organisation Documents: only for org owners ──
@@ -956,6 +970,57 @@ export default function DocumentsPage() {
       if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.newDocOverlays)setNewDocOverlays(stampOverlays(p.newDocOverlays));}
     }
     setLoading(false);
+  };
+
+  /* ── Fork-on-edit: duplicate an edit-granted document into the member's own
+        folder and open the COPY editable. The original is never modified. ── */
+  const forkAndEdit=async()=>{
+    if(!forkCtx) return;
+    setForking(true);
+    try{
+      const{data:{user}}=await supabase.auth.getUser();
+      if(!user){ setForking(false); return; }
+      // Load the full original document.
+      const{data:src,error:srcErr}=await supabase.from("documents")
+        .select("title,file_url,pdf_url,pdf_ready,format,pages,content,html_content,header,footer,annotations,document_kind")
+        .eq("id",forkCtx.sourceDocId).single();
+      if(srcErr||!src){ setForking(false); alert("Could not load the document to copy."); return; }
+      // Create the member's OWN copy (new documents row).
+      const{data:copy,error:copyErr}=await supabase.from("documents").insert({
+        owner_id:user.id, sender_id:user.id, uploaded_by:user.id,
+        owner_type:"individual",
+        document_kind:src.document_kind||"upload",
+        format:src.format, title:(src.title||"Document")+" (copy)",
+        file_url:src.file_url, pdf_url:src.pdf_url, pdf_ready:src.pdf_ready,
+        pages:src.pages||1, content:src.content, html_content:src.html_content,
+        header:src.header, footer:src.footer, annotations:src.annotations,
+        status:"draft",
+      }).select("id").single();
+      if(copyErr||!copy){ setForking(false); alert("Could not create your copy: "+(copyErr?.message||"")); return; }
+      // The auto-create trigger makes a drive entry; the member's lands in their
+      // member folder automatically (Model A). Ensure it's in their folder.
+      if(forkCtx.folderId){
+        await supabase.from("drive_items").update({ parent_id: forkCtx.folderId })
+          .eq("document_id", copy.id);
+      }
+      // Open the COPY, fully editable.
+      setForkCtx(null);
+      await openDocument({ id:copy.id, title:(src.title||"Document")+" (copy)", fileUrl:src.file_url||"",
+        format:(src.format||"pdf") as DocFormat, pages:src.pages||1,
+        pdfUrl:src.pdf_url||"", pdfReady:src.pdf_ready||false } as DocumentItem);
+      // Refresh the document list so the copy shows in their sidebar.
+      const{data:{user:u2}}=await supabase.auth.getUser();
+      if(u2){
+        const{data:owned}=await supabase.from("documents")
+          .select("id,title,file_url,document_kind,pages,status,format,pdf_url,pdf_ready")
+          .eq("owner_id",u2.id).neq("status","deleted").order("created_at",{ascending:false});
+        setDocuments((owned||[]).map((d:any)=>({
+          id:d.id,title:d.title,fileUrl:d.file_url||"",
+          format:d.format||(d.document_kind==="upload"?"pdf":"new"),pages:d.pages||1,
+          pdfUrl:d.pdf_url||"",pdfReady:d.pdf_ready||false,
+        })));
+      }
+    }finally{ setForking(false); }
   };
 
   /* ── Comments ── */
@@ -2764,6 +2829,13 @@ export default function DocumentsPage() {
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                     Print
                   </button>
+                  {/* Edit-granted: member may fork a personal copy (original untouched) */}
+                  {forkCtx && (
+                    <button className="dp-btn dp-btn-primary" onClick={forkAndEdit} disabled={forking} title="Make an editable copy in your own folder">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      {forking ? "Copying…" : "Edit a copy"}
+                    </button>
+                  )}
                 </div>
               ) : (<>
               {/* Show route action buttons if user is a recipient, otherwise show Route button */}

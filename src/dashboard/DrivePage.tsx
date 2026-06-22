@@ -115,6 +115,14 @@ export default function DrivePage() {
   const [renameVal, setRenameVal]   = useState("");
   const [moveItem, setMoveItem]     = useState<DriveItem | null>(null);
   const [moveTargets, setMoveTargets] = useState<DriveItem[]>([]);
+  // Grant (share) modal — owner grants a member view/edit on an item.
+  const [grantItem, setGrantItem]   = useState<DriveItem | null>(null);
+  const [grantMembers, setGrantMembers] = useState<{ id: string; email: string }[]>([]);
+  const [grantSel, setGrantSel]     = useState<Record<string, "none" | "view" | "edit">>({});
+  const [grantScope, setGrantScope] = useState<Record<string, "all" | "specific">>({});
+  const [grantFolderDocs, setGrantFolderDocs] = useState<DriveItem[]>([]);
+  const [grantChildSel, setGrantChildSel] = useState<Record<string, Record<string, "none" | "view" | "edit">>>({});
+  const [grantBusy, setGrantBusy]   = useState(false);
   const [busy, setBusy]         = useState(false);
   const [msg, setMsg]           = useState<{ type: "error" | "info"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -218,7 +226,8 @@ export default function DrivePage() {
       owner_id: id, org_id: orgId, parent_id: null,
       kind: "folder", name: emailById.get(id) || "member", is_member_root: true, member_id: id,
     }));
-    await supabase.from("drive_items").insert(rows);
+    const { error: insErr } = await supabase.from("drive_items").insert(rows);
+    if (insErr) console.warn("[Drive] member-folder insert:", insErr.message);
   }
 
   // Route to the document page (role-specific) and tell it which document to open.
@@ -227,10 +236,20 @@ export default function DrivePage() {
       setMsg({ type: "error", text: "This file isn't linked to an editable document. Re-upload it to the Drive." });
       return;
     }
-    // If this isn't the viewer's own document (e.g. org owner opening a member's
-    // doc), open READ-ONLY — view/download/print only, no edit, no restore.
-    const readOnly = item.owner_id !== myUserId;
-    if (!readOnly) {
+    // Decide how to open:
+    //  • Your own document → editable (restore-on-open).
+    //  • Granted 'edit' → open READ-ONLY but offer "Edit a copy" (forks to the
+    //    member's own folder; original untouched).
+    //  • Granted 'view' → read-only, no fork.
+    //  • Anything else not yours (e.g. owner viewing member content) → read-only.
+    let readOnly = item.owner_id !== myUserId;
+    let canForkEdit = false;
+    if (readOnly && ((item as any).__access || role === "organization_member")) {
+      const access = (item as any).__access
+        || (await supabase.rpc("my_grant_access", { p_item: item.id })).data;
+      if (access === "edit") canForkEdit = true;   // stays read-only; fork instead
+    }
+    if (!readOnly && item.owner_id === myUserId) {
       // Owner of the doc: the Drive is the durable home, so opening a
       // soft-deleted doc restores it. (Only the owner may mutate.)
       const { data: doc } = await supabase.from("documents")
@@ -239,11 +258,18 @@ export default function DrivePage() {
         await supabase.from("documents").update({ status: "draft" }).eq("id", item.document_id);
       }
     }
+    // The member's own folder id (where a fork should land), if they're a member.
+    let myFolderId: string | null = null;
+    if (canForkEdit && orgId) {
+      const { data: mf } = await supabase.from("drive_items")
+        .select("id").eq("org_id", orgId).eq("member_id", myUserId).eq("is_member_root", true).maybeSingle();
+      myFolderId = mf?.id || null;
+    }
     const dest =
       role === "organization" ? "/dashboard/organization" :
       role === "organization_member" ? "/dashboard/member" :
       "/dashboard/individual";
-    navigate(dest, { state: { openDocId: item.document_id, readOnly } });
+    navigate(dest, { state: { openDocId: item.document_id, readOnly, canForkEdit, myFolderId, sourceDriveItemId: item.id } });
   }
 
   const loadUsage = useCallback(async () => {
@@ -258,7 +284,28 @@ export default function DrivePage() {
     let q = supabase.from("drive_items").select("*").order("kind", { ascending: true }).order("name", { ascending: true });
     q = parentId === null ? q.is("parent_id", null) : q.eq("parent_id", parentId);
     const { data } = await q;
-    setItems((data || []) as DriveItem[]);
+    let rows = (data || []) as DriveItem[];
+
+    // For members at their root view, also surface items SHARED with them that
+    // aren't already shown (granted docs/folders living elsewhere in the org).
+    if (parentId === null && role === "organization_member") {
+      const { data: grants } = await supabase.from("drive_grants")
+        .select("drive_item_id,access").eq("member_id", myUserId);
+      const grantedIds = (grants || []).map((g: any) => g.drive_item_id);
+      const accessById = new Map((grants || []).map((g: any) => [g.drive_item_id, g.access]));
+      if (grantedIds.length) {
+        const { data: shared } = await supabase.from("drive_items").select("*").in("id", grantedIds);
+        const haveIds = new Set(rows.map(r => r.id));
+        for (const s of (shared || []) as DriveItem[]) {
+          if (!haveIds.has(s.id)) {
+            (s as any).__shared = true;
+            (s as any).__access = accessById.get(s.id) || "view";
+            rows.push(s);
+          }
+        }
+      }
+    }
+    setItems(rows);
     setLoading(false);
   }
 
@@ -561,6 +608,120 @@ export default function DrivePage() {
     loadItems(currentFolder);
   }
 
+  // ── Grants (owner shares an item with members) ──
+  async function openGrant(item: DriveItem) {
+    setMenuFor(null);
+    if (!orgId) { setMsg({ type: "error", text: "Grants are for organization drives." }); return; }
+    setGrantItem(item);
+    setGrantBusy(true);
+    // Org members from both membership sources.
+    const [{ data: profMembers }, { data: omMembers }] = await Promise.all([
+      supabase.from("profiles").select("id,email").eq("organization_id", orgId),
+      supabase.from("organization_members").select("user_id").eq("organization_id", orgId),
+    ]);
+    const byId = new Map<string, string>();
+    for (const p of (profMembers || [])) byId.set(p.id, p.email || p.id);
+    const omIds = (omMembers || []).map((r: any) => r.user_id).filter((x: string) => !byId.has(x));
+    if (omIds.length) {
+      const { data: extra } = await supabase.from("profiles").select("id,email").in("id", omIds);
+      for (const p of (extra || [])) byId.set(p.id, p.email || p.id);
+    }
+    byId.delete(item.owner_id as any);
+    const members = [...byId.entries()].map(([id, email]) => ({ id, email }));
+    setGrantMembers(members);
+
+    // If sharing a FOLDER, load its direct document children (for 'specific').
+    let kids: DriveItem[] = [];
+    if (item.kind === "folder") {
+      const { data: ch } = await supabase.from("drive_items")
+        .select("*").eq("parent_id", item.id).eq("kind", "file");
+      kids = (ch || []) as DriveItem[];
+    }
+    setGrantFolderDocs(kids);
+
+    // Pre-fill existing grants: the folder/doc grant (+scope) per member, and
+    // any per-child document grants (for specific mode).
+    const { data: folderGrants } = await supabase.from("drive_grants")
+      .select("member_id,access,scope").eq("drive_item_id", item.id);
+    const sel: Record<string, "none" | "view" | "edit"> = {};
+    const scopeSel: Record<string, "all" | "specific"> = {};
+    for (const m of members) { sel[m.id] = "none"; scopeSel[m.id] = "all"; }
+    for (const g of (folderGrants || [])) { sel[g.member_id] = g.access; scopeSel[g.member_id] = g.scope || "all"; }
+    setGrantSel(sel);
+    setGrantScope(scopeSel);
+
+    // Per-child grants: { memberId: { childId: 'view'|'edit'|'none' } }
+    const childSel: Record<string, Record<string, "none" | "view" | "edit">> = {};
+    for (const m of members) { childSel[m.id] = {}; for (const k of kids) childSel[m.id][k.id] = "none"; }
+    if (kids.length) {
+      const { data: childGrants } = await supabase.from("drive_grants")
+        .select("member_id,drive_item_id,access").in("drive_item_id", kids.map(k => k.id));
+      for (const g of (childGrants || [])) {
+        if (childSel[g.member_id]) childSel[g.member_id][g.drive_item_id] = g.access;
+      }
+    }
+    setGrantChildSel(childSel);
+    setGrantBusy(false);
+  }
+
+  async function saveGrants() {
+    if (!grantItem || !orgId) return;
+    setGrantBusy(true);
+    const isFolder = grantItem.kind === "folder";
+    const ops: Promise<any>[] = [];
+
+    for (const [memberId, access] of Object.entries(grantSel)) {
+      const scope = isFolder ? (grantScope[memberId] || "all") : "all";
+
+      // The folder/document grant row itself.
+      if (access === "none") {
+        ops.push(Promise.resolve(
+          supabase.from("drive_grants").delete()
+            .eq("drive_item_id", grantItem.id).eq("member_id", memberId)
+        ));
+      } else {
+        ops.push(Promise.resolve(
+          supabase.from("drive_grants").upsert({
+            org_id: orgId, drive_item_id: grantItem.id, member_id: memberId,
+            access, scope, granted_by: myUserId,
+          }, { onConflict: "drive_item_id,member_id" })
+        ));
+      }
+
+      // Per-child document grants only matter when sharing a FOLDER as 'specific'
+      // and the member actually has access. Otherwise clear any child grants.
+      if (isFolder) {
+        const childMap = grantChildSel[memberId] || {};
+        for (const child of grantFolderDocs) {
+          const childAccess = (access !== "none" && scope === "specific")
+            ? (childMap[child.id] || "none")
+            : "none";
+          if (childAccess === "none") {
+            ops.push(Promise.resolve(
+              supabase.from("drive_grants").delete()
+                .eq("drive_item_id", child.id).eq("member_id", memberId)
+            ));
+          } else {
+            ops.push(Promise.resolve(
+              supabase.from("drive_grants").upsert({
+                org_id: orgId, drive_item_id: child.id, member_id: memberId,
+                access: childAccess, scope: "all", granted_by: myUserId,
+              }, { onConflict: "drive_item_id,member_id" })
+            ));
+          }
+        }
+      }
+    }
+
+    const results = await Promise.all(ops);
+    setGrantBusy(false);
+    const firstErr = results.find((r: any) => r?.error)?.error;
+    if (firstErr) { setMsg({ type: "error", text: "Grant failed: " + firstErr.message }); return; }
+    setGrantItem(null);
+    setMsg({ type: "info", text: "Access updated." });
+    setTimeout(() => setMsg(null), 1500);
+  }
+
   const pct = usage && usage.limit > 0 ? Math.min(100, (usage.used / usage.limit) * 100) : 0;
   const meterColor = pct > 90 ? "#dc2626" : pct > 70 ? "#b45309" : "#7c3aed";
 
@@ -675,12 +836,18 @@ export default function DrivePage() {
                           <button className="dr-menu-item danger" onClick={() => deleteItem(item)}>🗑️ Delete</button>
                         </>
                       )}
+                      {/* Org owner can SHARE (grant) any item in their org drive. */}
+                      {role === "organization" && orgId && !item.is_member_root && (
+                        <button className="dr-menu-item" onClick={() => openGrant(item)}>🔗 Share access</button>
+                      )}
                     </div>
                   )}
                   <div className="dr-card-icon" style={{ fontSize: 38 }}>{item.is_member_root ? "👤" : ic.emoji}</div>
                   <div className="dr-card-name">{item.name}</div>
                   <div className="dr-card-sub">
-                    {item.is_member_root ? "Member folder" : item.kind === "folder" ? "Folder" : fmtBytes(item.size_bytes)}
+                    {(item as any).__shared
+                      ? `Shared · ${(item as any).__access === "edit" ? "can edit" : "view only"}`
+                      : item.is_member_root ? "Member folder" : item.kind === "folder" ? "Folder" : fmtBytes(item.size_bytes)}
                   </div>
                 </div>
               );
@@ -747,6 +914,89 @@ export default function DrivePage() {
               </div>
               <div className="dr-modal-foot">
                 <button className="dr-btn ghost" onClick={() => setMoveItem(null)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Grant (Share access) modal ── */}
+        {grantItem && (
+          <div className="dr-backdrop" onClick={() => setGrantItem(null)}>
+            <div className="dr-modal" onClick={e => e.stopPropagation()} style={{ width: 440 }}>
+              <h3>Share "{grantItem.name}"</h3>
+              <p>Choose who can access this {grantItem.kind === "folder" ? "folder (and everything inside it)" : "document"}. Editing always forks a personal copy — the original is never changed.</p>
+              {grantBusy ? (
+                <div style={{ padding: 16, textAlign: "center", color: "var(--muted)", fontSize: 13 }}>Loading…</div>
+              ) : grantMembers.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "8px 4px" }}>No members to share with yet.</div>
+              ) : (
+                <div style={{ maxHeight: 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                  {grantMembers.map(m => (
+                    <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px", border: "1px solid var(--border)", borderRadius: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ flex: 1, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.email}</span>
+                        {(["none", "view", "edit"] as const).map(lvl => (
+                          <button key={lvl}
+                            onClick={() => setGrantSel(s => ({ ...s, [m.id]: lvl }))}
+                            style={{
+                              fontSize: 11, padding: "3px 9px", borderRadius: 6, cursor: "pointer",
+                              border: "1px solid " + (grantSel[m.id] === lvl ? "var(--purple)" : "var(--border)"),
+                              background: grantSel[m.id] === lvl ? "var(--purple)" : "transparent",
+                              color: grantSel[m.id] === lvl ? "#fff" : "var(--muted)",
+                              fontFamily: "var(--mono)", textTransform: "capitalize",
+                            }}>{lvl}</button>
+                        ))}
+                      </div>
+
+                      {/* Folder: choose All vs Specific documents when access is granted */}
+                      {grantItem.kind === "folder" && grantSel[m.id] !== "none" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 2 }}>
+                          <span style={{ fontSize: 10.5, color: "var(--muted)", fontFamily: "var(--mono)" }}>Contents:</span>
+                          {(["all", "specific"] as const).map(sc => (
+                            <button key={sc}
+                              onClick={() => setGrantScope(s => ({ ...s, [m.id]: sc }))}
+                              style={{
+                                fontSize: 10.5, padding: "2px 8px", borderRadius: 5, cursor: "pointer",
+                                border: "1px solid " + ((grantScope[m.id] || "all") === sc ? "var(--purple)" : "var(--border)"),
+                                background: (grantScope[m.id] || "all") === sc ? "var(--purple-light)" : "transparent",
+                                color: (grantScope[m.id] || "all") === sc ? "var(--purple)" : "var(--muted)",
+                                fontFamily: "var(--mono)",
+                              }}>{sc === "all" ? "All documents" : "Specific"}</button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Specific: per-document view/edit toggles */}
+                      {grantItem.kind === "folder" && grantSel[m.id] !== "none" && (grantScope[m.id] || "all") === "specific" && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 8, marginTop: 2 }}>
+                          {grantFolderDocs.length === 0 && (
+                            <span style={{ fontSize: 11, color: "var(--muted)" }}>No documents in this folder yet.</span>
+                          )}
+                          {grantFolderDocs.map(doc => (
+                            <div key={doc.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ flex: 1, fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📄 {doc.name}</span>
+                              {(["none", "view", "edit"] as const).map(lvl => (
+                                <button key={lvl}
+                                  onClick={() => setGrantChildSel(s => ({ ...s, [m.id]: { ...(s[m.id] || {}), [doc.id]: lvl } }))}
+                                  style={{
+                                    fontSize: 10, padding: "2px 6px", borderRadius: 5, cursor: "pointer",
+                                    border: "1px solid " + (((grantChildSel[m.id] || {})[doc.id] || "none") === lvl ? "var(--purple)" : "var(--border)"),
+                                    background: ((grantChildSel[m.id] || {})[doc.id] || "none") === lvl ? "var(--purple)" : "transparent",
+                                    color: ((grantChildSel[m.id] || {})[doc.id] || "none") === lvl ? "#fff" : "var(--muted)",
+                                    fontFamily: "var(--mono)", textTransform: "capitalize",
+                                  }}>{lvl}</button>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="dr-modal-foot">
+                <button className="dr-btn ghost" onClick={() => setGrantItem(null)}>Cancel</button>
+                <button className="dr-btn" style={{ background: "var(--purple)", color: "#fff" }} disabled={grantBusy} onClick={saveGrants}>Save access</button>
               </div>
             </div>
           </div>

@@ -31,6 +31,9 @@ export default function IndividualSignup() {
     const email = inviteEmail ?? (formData.get("email") as string);
     const password = formData.get("password") as string;
 
+    // Capture the chosen method NOW, so nothing can change it mid-flight.
+    const chosenMethod = authMethod;
+
     setLoading(true);
 
     if (inviteEmail && inviteEmail !== email) {
@@ -50,15 +53,42 @@ export default function IndividualSignup() {
 
     const userId = data.user.id;
 
-    // ✅ CREATE PROFILE — store chosen verification method
-    await supabase
-      .from("profiles")
-      .update({
-        full_name: name,
-        role: organizationId ? "organization_member" : "individual",
-        auth_method: authMethod,
-      })
-      .eq("id", userId);
+    // ✅ STORE PROFILE — the chosen verification method MUST persist.
+    // The profile row is created by a DB trigger on signup. A single .update()
+    // can run BEFORE that trigger commits, match zero rows, and silently leave
+    // the default ('authenticator') — the bug that sent email-OTP users to the
+    // authenticator screen. We UPDATE (never insert — RLS only allows users to
+    // update their own row, not insert it), and RETRY until the row exists and
+    // the value sticks. We confirm by reading it back.
+    let saved = false;
+    for (let attempt = 0; attempt < 5 && !saved; attempt++) {
+      const { data: rows, error: upErr } = await supabase
+        .from("profiles")
+        .update({
+          full_name: name,
+          role: organizationId ? "organization_member" : "individual",
+          auth_method: chosenMethod,
+        })
+        .eq("id", userId)
+        .select("auth_method");           // returns the updated rows
+
+      // Success = no error AND a row was actually updated to our value.
+      if (!upErr && rows && rows.length > 0 && rows[0].auth_method === chosenMethod) {
+        saved = true;
+        break;
+      }
+      // Row not created by the trigger yet → wait briefly and try again.
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    if (!saved) {
+      // Couldn't confirm the write. Don't block the user — route them by their
+      // choice — but let them know they may need to set it in Settings.
+      alert(
+        "Your account was created, but we couldn't confirm your verification " +
+        "preference. If login asks for the wrong method, set it in Settings."
+      );
+    }
 
     setLoading(false);
 
@@ -66,7 +96,7 @@ export default function IndividualSignup() {
     // Both paths must pass through onboarding (/individual) so signature +
     // profile picture are always collected. Onboarding self-gates on the
     // onboarding_completed flag, so it shows the form only if not yet done.
-    if (authMethod === "authenticator") {
+    if (chosenMethod === "authenticator") {
       // Set up the authenticator app first; MFASetup continues to onboarding.
       navigate("/mfa");
     } else {

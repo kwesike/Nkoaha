@@ -23,6 +23,9 @@ export default function OrganizationSignup() {
     const email = form.get("email") as string;
     const password = form.get("password") as string;
 
+    // Capture the chosen method NOW so nothing can change it mid-flight.
+    const chosenMethod = authMethod;
+
     // 1️⃣ Create auth user
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -41,21 +44,43 @@ export default function OrganizationSignup() {
       return;
     }
 
-    // Store org name + role + chosen verification method
-    await supabase
-      .from("profiles")
-      .update({
-        full_name: orgName,
-        role: "organization",
-        auth_method: authMethod,
-      })
-      .eq("id", data.user.id);
+    const userId = data.user.id;
+
+    // Store org name + role + chosen verification method.
+    // The profile row is created by a DB trigger on signup. A single .update()
+    // can run BEFORE that trigger commits, match zero rows, and silently leave
+    // the default ('authenticator') — the bug that sent email-OTP users to the
+    // authenticator screen. We UPDATE (never insert — RLS only allows updating
+    // your own row), and RETRY until the row exists and the value sticks.
+    let saved = false;
+    for (let attempt = 0; attempt < 5 && !saved; attempt++) {
+      const { data: rows, error: upErr } = await supabase
+        .from("profiles")
+        .update({
+          full_name: orgName,
+          role: "organization",
+          auth_method: chosenMethod,
+        })
+        .eq("id", userId)
+        .select("auth_method");
+      if (!upErr && rows && rows.length > 0 && rows[0].auth_method === chosenMethod) {
+        saved = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!saved) {
+      alert(
+        "Your account was created, but we couldn't confirm your verification " +
+        "preference. If login asks for the wrong method, set it in Settings."
+      );
+    }
 
     // 2️⃣ Upload logo
     let logoUrl: string | null = null;
 
     if (logo) {
-      const path = `${data.user.id}.png`;
+      const path = `${userId}.png`;
 
       const { error: uploadError } = await supabase.storage
         .from("organization-logos")
@@ -76,7 +101,7 @@ export default function OrganizationSignup() {
     const { data: org, error: orgError } = await supabase
       .from("organizations")
       .insert({
-        owner_id: data.user.id,
+        owner_id: userId,
         name: orgName,
         logo: logoUrl,
       })
@@ -92,14 +117,14 @@ export default function OrganizationSignup() {
     // 4️⃣ Add owner as member
     await supabase.from("organization_members").insert({
       organization_id: org.id,
-      user_id: data.user.id,
+      user_id: userId,
       role: "admin",
     });
 
     setLoading(false);
 
     // ── Route by chosen verification method ──
-    if (authMethod === "authenticator") {
+    if (chosenMethod === "authenticator") {
       navigate("/mfa");
     } else {
       navigate("/dashboard/organizationdashboard");
