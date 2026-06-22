@@ -548,7 +548,9 @@ export default function DocumentsPage() {
   const [pdfOverlays, setPdfOverlays] = useState<PdfOverlay[]>([]);
   const [pdfTool, setPdfTool]         = useState<"none"|"text"|"date"|"signature"|"table">("none");
   const [dragOverlay, setDragOverlay] = useState<string|null>(null);
-  const [dragStart, setDragStart]     = useState<{x:number;y:number}>({x:0,y:0});
+  // Only the setter is used now (the multi-page drag handler positions from the
+  // cursor directly, so it never reads the previous dragStart value).
+  const [, setDragStart]     = useState<{x:number;y:number}>({x:0,y:0});
   const [focusId, setFocusId]         = useState<string|null>(null);
   // Route action state — set when current user is a recipient of the active doc
   const [myRoute, setMyRoute] = useState<{id:string;is_final:boolean;status:string;route_order:number;total_steps:number}|null>(null);
@@ -2946,12 +2948,43 @@ export default function DocumentsPage() {
           <div className="dp-canvas" ref={canvasAreaRef} onContextMenu={handleRightClick}
             onMouseMove={e=>{
               if(!dragOverlay)return;
-              const stage=canvasAreaRef.current?.querySelector(".dp-pdf-stage") as HTMLElement;
-              if(!stage)return;
-              const rect=stage.getBoundingClientRect();
-              const dx=((e.clientX-dragStart.x)/rect.width)*100;
-              const dy=((e.clientY-dragStart.y)/rect.height)*100;
-              const mover=(prev:PdfOverlay[])=>prev.map(o=>o.id===dragOverlay?{...o,x:Math.max(0,Math.min(95,o.x+dx)),y:Math.max(0,Math.min(97,o.y+dy))}:o);
+              // Multi-page aware drag: find which page (.dp-pdf-stage) the cursor
+              // is currently over, and position the overlay relative to THAT page.
+              // This lets an overlay cross from one page to the next instead of
+              // being trapped on page 1 (the old code always measured against the
+              // first stage and clamped y to that single page).
+              const stages=Array.from(
+                canvasAreaRef.current?.querySelectorAll(".dp-pdf-stage") || []
+              ) as HTMLElement[];
+              if(!stages.length)return;
+
+              // Pick the stage whose vertical band contains the cursor; if the
+              // cursor is above the first or below the last, clamp to nearest.
+              let targetIdx=-1; let targetRect:DOMRect|null=null;
+              for(let i=0;i<stages.length;i++){
+                const r=stages[i].getBoundingClientRect();
+                if(e.clientY>=r.top && e.clientY<=r.bottom){ targetIdx=i; targetRect=r; break; }
+              }
+              if(targetIdx===-1){
+                // Cursor between/outside pages — snap to nearest page by distance.
+                let best=Infinity;
+                for(let i=0;i<stages.length;i++){
+                  const r=stages[i].getBoundingClientRect();
+                  const d=e.clientY<r.top?r.top-e.clientY:e.clientY-r.bottom;
+                  if(d<best){best=d;targetIdx=i;targetRect=r;}
+                }
+              }
+              if(!targetRect)return;
+
+              // Position as a percentage WITHIN the target page.
+              const nx=((e.clientX-targetRect.left)/targetRect.width)*100;
+              const ny=((e.clientY-targetRect.top)/targetRect.height)*100;
+              const mover=(prev:PdfOverlay[])=>prev.map(o=>o.id===dragOverlay?{
+                ...o,
+                pageIdx: targetIdx,
+                x: Math.max(0,Math.min(95,nx)),
+                y: Math.max(0,Math.min(97,ny)),
+              }:o);
               setPdfOverlays(mover);
               setDocxOverlays(mover);
               setDragStart({x:e.clientX,y:e.clientY});
