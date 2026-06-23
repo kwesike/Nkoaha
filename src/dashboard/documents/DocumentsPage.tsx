@@ -1760,6 +1760,14 @@ export default function DocumentsPage() {
       html_content:htmlContent||null,content:EMPTY_DOC,status:"draft",pages,
     }).select().single();
     if(!data)return;
+    // The DB trigger auto-creates a linked drive_items row, but it can't know
+    // the uploaded file's byte size. Write it now so the Drive shows the real
+    // size and it counts toward the storage quota (was showing 0 B before).
+    if(file.size){
+      await supabase.from("drive_items")
+        .update({size_bytes:file.size})
+        .eq("document_id",data.id);
+    }
     const nd:DocumentItem={id:data.id,title:data.title,fileUrl:fileUrl,format,pages};
     setDocuments(prev=>[nd,...prev]);
     await logActivity("document_uploaded",data.id,data.title,user.id);
