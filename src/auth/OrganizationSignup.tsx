@@ -26,14 +26,18 @@ export default function OrganizationSignup() {
     // Capture the chosen method NOW so nothing can change it mid-flight.
     const chosenMethod = authMethod;
 
-    // 1️⃣ Create auth user
+    // 1️⃣ Create auth user — pass verification method + name/role as metadata.
+    // The DB trigger (handle_new_user) writes these into the profile AT
+    // creation, so there's no fragile post-signup update that fails when the
+    // session isn't ready. NOTE: trigger reads 'full_name' (not 'name').
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: {
           role: "organization",
-          name: orgName,
+          full_name: orgName,
+          auth_method: chosenMethod,
         },
       },
     });
@@ -45,36 +49,6 @@ export default function OrganizationSignup() {
     }
 
     const userId = data.user.id;
-
-    // Store org name + role + chosen verification method.
-    // The profile row is created by a DB trigger on signup. A single .update()
-    // can run BEFORE that trigger commits, match zero rows, and silently leave
-    // the default ('authenticator') — the bug that sent email-OTP users to the
-    // authenticator screen. We UPDATE (never insert — RLS only allows updating
-    // your own row), and RETRY until the row exists and the value sticks.
-    let saved = false;
-    for (let attempt = 0; attempt < 5 && !saved; attempt++) {
-      const { data: rows, error: upErr } = await supabase
-        .from("profiles")
-        .update({
-          full_name: orgName,
-          role: "organization",
-          auth_method: chosenMethod,
-        })
-        .eq("id", userId)
-        .select("auth_method");
-      if (!upErr && rows && rows.length > 0 && rows[0].auth_method === chosenMethod) {
-        saved = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    if (!saved) {
-      alert(
-        "Your account was created, but we couldn't confirm your verification " +
-        "preference. If login asks for the wrong method, set it in Settings."
-      );
-    }
 
     // 2️⃣ Upload logo
     let logoUrl: string | null = null;

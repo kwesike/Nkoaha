@@ -42,8 +42,21 @@ export default function IndividualSignup() {
       return;
     }
 
-    // ✅ CREATE AUTH USER
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    // ✅ CREATE AUTH USER — pass the chosen verification method (and name/role)
+    // as metadata. The DB trigger (handle_new_user) writes these into the
+    // profile AT creation, so there's no fragile post-signup update that can
+    // fail when the session/auth.uid() isn't ready yet.
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          auth_method: chosenMethod,
+          full_name: name,
+          role: organizationId ? "organization_member" : "individual",
+        },
+      },
+    });
 
     if (error || !data.user) {
       alert(error?.message);
@@ -53,41 +66,13 @@ export default function IndividualSignup() {
 
     const userId = data.user.id;
 
-    // ✅ STORE PROFILE — the chosen verification method MUST persist.
-    // The profile row is created by a DB trigger on signup. A single .update()
-    // can run BEFORE that trigger commits, match zero rows, and silently leave
-    // the default ('authenticator') — the bug that sent email-OTP users to the
-    // authenticator screen. We UPDATE (never insert — RLS only allows users to
-    // update their own row, not insert it), and RETRY until the row exists and
-    // the value sticks. We confirm by reading it back.
-    let saved = false;
-    for (let attempt = 0; attempt < 5 && !saved; attempt++) {
-      const { data: rows, error: upErr } = await supabase
-        .from("profiles")
-        .update({
-          full_name: name,
-          role: organizationId ? "organization_member" : "individual",
-          auth_method: chosenMethod,
-        })
-        .eq("id", userId)
-        .select("auth_method");           // returns the updated rows
-
-      // Success = no error AND a row was actually updated to our value.
-      if (!upErr && rows && rows.length > 0 && rows[0].auth_method === chosenMethod) {
-        saved = true;
-        break;
-      }
-      // Row not created by the trigger yet → wait briefly and try again.
-      await new Promise((r) => setTimeout(r, 500));
-    }
-
-    if (!saved) {
-      // Couldn't confirm the write. Don't block the user — route them by their
-      // choice — but let them know they may need to set it in Settings.
-      alert(
-        "Your account was created, but we couldn't confirm your verification " +
-        "preference. If login asks for the wrong method, set it in Settings."
-      );
+    // If this is an org-member invite signup, attach the organization_id too.
+    // (The trigger set role/name/auth_method; this only links the org, which is
+    // a separate field. Best-effort.)
+    if (organizationId) {
+      await supabase.from("profiles")
+        .update({ organization_id: organizationId })
+        .eq("id", userId);
     }
 
     setLoading(false);
