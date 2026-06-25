@@ -154,7 +154,7 @@ export default function InboxPage() {
 
     const { data } = await supabase
       .from("activity_logs")
-      .select("id, action, metadata, created_at, read_at")
+      .select("id, action, document_id, metadata, created_at, read_at")
       .eq("user_id", user.id)
       .in("action", [
         "document_received","org_invite_received","partnership_invite_received",
@@ -235,10 +235,13 @@ export default function InboxPage() {
   // reply right away.
   async function openDoc(item: InboxItem) {
     await markRead(item);
-    if (item.document_id) {
+    // document_id lives on the activity_logs row, but older rows may only carry
+    // it inside metadata — fall back to that so the link still works.
+    const docId = item.document_id || item.metadata?.document_id;
+    if (docId) {
       navigate(docRouteForRole(), {
         state: {
-          openDocId: item.document_id,
+          openDocId: docId,
           openComments: item.action === "document_comment",
         },
       });

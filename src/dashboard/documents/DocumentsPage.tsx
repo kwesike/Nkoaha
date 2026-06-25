@@ -27,6 +27,9 @@ interface PdfOverlay {
   content: string;
   fontSize: number; // px — user can resize with scroll wheel or +/- buttons
   rotation?: number; // degrees 0-359 for text overlays
+  color?: string;    // text colour (hex) for text/date overlays
+  bold?: boolean;    // bold text for text/date overlays
+  underline?: boolean; // underline text for text/date overlays
   step?: number;    // route_order of the recipient who placed this overlay — locked to future recipients
   tableData?: TableData; // present when type === "table"
 }
@@ -163,7 +166,7 @@ const STYLES = `
   .dp-ov-table{border-collapse:collapse;background:rgba(255,255,255,.92);box-shadow:0 0 0 1px rgba(124,58,237,.35);font-family:var(--font);color:#1c1917}
   .dp-ov-table td{border:1px solid #555;padding:3px 7px;min-width:36px;outline:none;vertical-align:top;line-height:1.3}
   .dp-ov-table td:focus{box-shadow:inset 0 0 0 2px var(--accent)}
-  .dp-ov-table-handle{display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;font-size:9px;font-family:var(--mono);padding:3px 9px;border-radius:4px 4px 0 0;cursor:move;user-select:none;position:absolute;top:-20px;left:0;z-index:40;pointer-events:auto;white-space:nowrap}
+  .dp-ov-table-handle{display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;font-size:9px;font-family:var(--mono);padding:3px 9px;border-radius:4px 4px 0 0;cursor:move;user-select:none;position:absolute;top:-38px;left:0;z-index:40;pointer-events:auto;white-space:nowrap}
   .dp-ov-table-handle:hover{filter:brightness(1.1)}
   .dp-ov-table-ctrls{position:absolute;top:-18px;right:0;display:flex;gap:3px}
   .dp-ov-table-ctrls button{background:rgba(0,0,0,.72);color:#fff;border:none;border-radius:4px;font-size:10px;font-family:var(--mono);padding:2px 5px;cursor:pointer}
@@ -175,7 +178,7 @@ const STYLES = `
   .dp-pdf-overlay-item.locked .dp-overlay-resize{display:none!important}
   .dp-pdf-overlay-item.locked .dp-pdf-overlay-del{display:none!important}
   /* Comments dialog */
-  .dp-comments-dialog{position:fixed;bottom:80px;right:24px;width:340px;background:#fff;border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.18);border:1px solid var(--border);z-index:250;display:flex;flex-direction:column;overflow:hidden;animation:modal-in .16s ease}
+  .dp-comments-dialog{position:fixed;bottom:80px;right:24px;width:340px;background:#fff;border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.18);border:1px solid var(--border);z-index:1100;display:flex;flex-direction:column;overflow:hidden;animation:modal-in .16s ease}
   .dp-comments-header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--accent);color:#fff}
   .dp-comments-title{font-size:13px;font-weight:600}
   .dp-comments-close{background:none;border:none;color:#fff;cursor:pointer;font-size:18px;line-height:1;padding:0}
@@ -189,7 +192,7 @@ const STYLES = `
   .dp-comments-textarea:focus{border-color:var(--accent)}
   .dp-comments-send{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 12px;font-family:var(--font);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
   .dp-comments-send:hover{background:var(--accent-dark)}.dp-comments-send:disabled{opacity:.5;cursor:not-allowed}
-  .dp-comments-fab{position:fixed;bottom:24px;right:24px;width:48px;height:48px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:240;transition:all .15s}
+  .dp-comments-fab{position:fixed;bottom:24px;right:24px;width:48px;height:48px;border-radius:50%;background:var(--accent);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(124,58,237,.4);z-index:1090;transition:all .15s}
   .dp-comments-fab:hover{background:var(--accent-dark);transform:scale(1.05)}
   .dp-comments-badge{position:absolute;top:-4px;right:-4px;width:18px;height:18px;background:#dc2626;color:#fff;border-radius:50%;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center}
   /* Auth confirmation modal */
@@ -540,7 +543,7 @@ export default function DocumentsPage() {
   const [currentOrgId, setCurrentOrgId]     = useState<string|null>(null);
   const [docxHtmlPages, setDocxHtmlPages] = useState<string[]>([]);
   const [docxOverlays, setDocxOverlays]   = useState<PdfOverlay[]>([]);
-  const [docxTool, setDocxTool]           = useState<"none"|"text"|"date"|"signature">("none");
+  const [docxTool, setDocxTool]           = useState<"none"|"text"|"date"|"signature"|"table">("none");
   const [docxPdfDoc, setDocxPdfDoc]       = useState<any>(null);
   const [docxPdfReady, setDocxPdfReady]   = useState(false);
   const [converting2Pdf, setConverting2Pdf] = useState(false);
@@ -707,7 +710,12 @@ export default function DocumentsPage() {
         if(canFork){ setForkCtx({ sourceDocId: openDocId, folderId: forkFolder || null }); }
         else { setForkCtx(null); }
         if(openReadOnly||canFork) setTimeout(()=>openOrgDocument(target),100);
-        else if(allDocs.find((d:any)=>d.id===openDocId)) setTimeout(()=>openDocument(target),100);
+        // Open via the normal path. We DON'T require the doc to be in allDocs —
+        // openDocument fetches it directly, so an inbox "View & Reply" works even
+        // when the commented-on doc isn't already in this user's sidebar list
+        // (e.g. a routed doc whose list-fetch didn't include it). If the user
+        // genuinely can't read it, openDocument surfaces that itself.
+        else setTimeout(()=>openDocument(target),100);
         // If arriving from an inbox "View & Reply", open the comment panel so the
         // user can reply immediately.
         if(wantComments){
@@ -2475,8 +2483,21 @@ export default function DocumentsPage() {
           ctx.fillStyle=cs.color||"#1c1917";
           ctx.textBaseline="top";
           ctx.textAlign="left";
+          const isUnderlined=(cs.textDecorationLine||cs.textDecoration||"").includes("underline");
           lines.forEach((ln,li)=>{
-            ctx.fillText(ln, offLeft*px, (offTop+halfLead+li*lineH)*px);
+            const ly=(offTop+halfLead+li*lineH)*px;
+            ctx.fillText(ln, offLeft*px, ly);
+            // Canvas fillText doesn't render underline — draw it manually.
+            if(isUnderlined && ln){
+              const w=ctx.measureText(ln).width;
+              const uy=ly+fontSizeCss*px*1.05; // just below the baseline
+              ctx.strokeStyle=cs.color||"#1c1917";
+              ctx.lineWidth=Math.max(1,fontSizeCss*px*0.07);
+              ctx.beginPath();
+              ctx.moveTo(offLeft*px, uy);
+              ctx.lineTo(offLeft*px + w, uy);
+              ctx.stroke();
+            }
           });
         }
         ctx.restore();
@@ -3103,7 +3124,7 @@ export default function DocumentsPage() {
                               style={{height:ov.fontSize?ov.fontSize*3:48,maxWidth:300,display:"block",objectFit:"contain",pointerEvents:"none"}}
                               onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
                           ):ov.type==="date"?(
-                            <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,display:"inline-block"}}>{ov.content}</span>
+                            <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,color:ov.color||"#1c1917",fontWeight:ov.bold?700:400,textDecoration:ov.underline?"underline":"none",display:"inline-block"}}>{ov.content}</span>
                           ):ov.type==="table"&&ov.tableData?(
                             <div data-ovid={ov.id} style={{position:"relative"}}>
                               {!isLocked(ov)&&(
@@ -3167,7 +3188,7 @@ export default function DocumentsPage() {
                           ):(
                             <div data-ovid={ov.id} ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable={!isLocked(ov)} suppressContentEditableWarning
                               className="dp-pdf-overlay-text"
-                              style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,cursor:isLocked(ov)?"not-allowed":"move",opacity:isLocked(ov)?0.85:1,outline:isLocked(ov)?"none":undefined}}
+                              style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,color:ov.color||"#1c1917",fontWeight:ov.bold?700:400,textDecoration:ov.underline?"underline":"none",cursor:isLocked(ov)?"not-allowed":"move",opacity:isLocked(ov)?0.85:1,outline:isLocked(ov)?"none":undefined}}
                               title={isLocked(ov)?"Placed by a previous recipient — cannot be edited":""}
                               onMouseDown={e=>{
                                 if(document.activeElement===e.currentTarget)e.stopPropagation();
@@ -3180,6 +3201,16 @@ export default function DocumentsPage() {
                             onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>}
                           {!isLocked(ov)&&(ov.type==="text"||ov.type==="date")&&(
                             <div style={{position:"absolute",bottom:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:13}}>
+                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,bold:!o.bold}:o));setSaveStatus("unsaved");}}
+                                title="Bold" style={{background:ov.bold?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 4px",borderRadius:3}}>B</button>
+                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,underline:!o.underline}:o));setSaveStatus("unsaved");}}
+                                title="Underline" style={{background:ov.underline?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,textDecoration:"underline",cursor:"pointer",padding:"0 4px",borderRadius:3}}>U</button>
+                              <label title="Text colour" onMouseDown={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",cursor:"pointer"}}>
+                                <input type="color" value={ov.color||"#1c1917"} onClick={e=>e.stopPropagation()}
+                                  onChange={e=>{const v=e.target.value;setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,color:v}:o));setSaveStatus("unsaved");}}
+                                  style={{width:18,height:16,padding:0,border:"none",background:"none",cursor:"pointer"}}/>
+                              </label>
+                              <span style={{width:1,height:14,background:"rgba(255,255,255,.25)"}}/>
                               <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,rotation:((o.rotation||0)-15+360)%360}:o));setSaveStatus("unsaved");}}
                                 style={{background:"none",border:"none",color:"#fff",fontSize:12,cursor:"pointer",padding:"0 2px"}}>↺</button>
                               <span style={{color:"#ccc",fontSize:9,fontFamily:"monospace",minWidth:24,textAlign:"center"}}>{ov.rotation||0}°</span>
@@ -3209,7 +3240,7 @@ export default function DocumentsPage() {
                 {/* Same toolbar as PDF */}
                 {!(activeDoc as any).isOrgDoc && <div className="dp-pdf-toolbar">
                   <span className="dp-pdf-toolbar-label">Place on document:</span>
-                  {(["text","date","signature","image"] as const).map(tool=>(
+                  {(["text","date","signature","image","table"] as const).map(tool=>(
                     <button key={tool} className={`dp-pdf-tool ${docxTool===tool?"active":""}`} onClick={()=>{
                       if(tool==="image"){
                         imageInputTarget.current="docx";
@@ -3223,6 +3254,7 @@ export default function DocumentsPage() {
                       {tool==="date"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> Date</>}
                       {tool==="signature"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 19.5v.5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8.5L18 5.5"/><path d="M8 18h1l9.1-9.1-1-1L8 17z"/></svg> Signature</>}
                       {tool==="image"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg> Image</>}
+                      {tool==="table"&&<><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="12" y1="3" x2="12" y2="21"/></svg> Table</>}
                     </button>
                   ))}
                   {docxTool!=="none"&&<span className="dp-pdf-tool-hint">Click anywhere on the page to place</span>}
@@ -3253,6 +3285,15 @@ export default function DocumentsPage() {
                             if(!content){alert("Could not load signature.");return;}
                           }else{content="Text here…";}
                           const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                          if(docxTool==="table"){
+                            // Default 2×2 table with empty cells (same as PDF).
+                            const mkCell=():TableCell=>({text:"",align:"left"});
+                            const tableData:TableData={rows:2,cols:2,cells:[[mkCell(),mkCell()],[mkCell(),mkCell()]]};
+                            setDocxOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:"table",content:"",fontSize:13,tableData,step:myRoute?.route_order??0}]);
+                            setSaveStatus("unsaved");
+                            setDocxTool("none");
+                            return;
+                          }
                           setDocxOverlays(prev=>[...prev,{id:newId,pageIdx:i,x,y,type:docxTool,content,fontSize:16,step:myRoute?.route_order??0}]);
                           setSaveStatus("unsaved");
                           if(docxTool==="text")setFocusId(newId);
@@ -3270,11 +3311,13 @@ export default function DocumentsPage() {
                               setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,Math.min(120,(o.fontSize||16)+delta))}:o));
                               setSaveStatus("unsaved");
                             }}>
+                            {ov.type!=="table"&&(
                             <div className="dp-overlay-resize">
                               <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}}>+</button>
                               <span>{ov.fontSize||16}px</span>
                               <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}}>−</button>
                             </div>
+                            )}
                             {ov.type==="image"?(
                               <img data-ovid={ov.id} src={ov.content} alt="attachment" crossOrigin="anonymous"
                                 style={{width:ov.fontSize?ov.fontSize*8:160,maxWidth:400,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:3}}
@@ -3283,16 +3326,89 @@ export default function DocumentsPage() {
                               <img data-ovid={ov.id} src={ov.content} alt="sig" crossOrigin="anonymous"
                                 style={{height:ov.fontSize?ov.fontSize*3:48,maxWidth:300,display:"block",objectFit:"contain",pointerEvents:"none"}}
                                 onError={e=>{(e.target as HTMLImageElement).style.display="none";}}/>
+                            ):ov.type==="table"&&ov.tableData?(
+                              <div data-ovid={ov.id} style={{position:"relative"}}>
+                                {!isLocked(ov)&&(
+                                  <div className="dp-ov-table-handle"
+                                    title="Drag to move table"
+                                    onMouseDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}>
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="6" r="1.6"/><circle cx="12" cy="6" r="1.6"/><circle cx="18" cy="6" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></svg>
+                                    <span>Move</span>
+                                  </div>
+                                )}
+                                <table className="dp-ov-table" style={{fontSize:ov.fontSize||13}}>
+                                  <tbody>
+                                    {ov.tableData.cells.map((row,r)=>(
+                                      <tr key={r}>
+                                        {row.map((cell,c)=>(
+                                          <td key={c} data-cell={`${r}:${c}`}
+                                            contentEditable={!isLocked(ov)} suppressContentEditableWarning
+                                            onFocus={()=>setActiveCell(`${ov.id}:${r}:${c}`)}
+                                            onMouseDown={e=>e.stopPropagation()}
+                                            onClick={e=>e.stopPropagation()}
+                                            onBlur={e=>tableSetCell(ov.id,r,c,{text:e.currentTarget.textContent||""})}
+                                            style={{
+                                              fontWeight:cell.bold?700:400,
+                                              textAlign:cell.align||"left",
+                                              background:cell.bg||"transparent",
+                                              minWidth:36,
+                                            }}>{cell.text}</td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                                {!isLocked(ov)&&(
+                                  <div className="dp-ov-table-ctrls" onMouseDown={e=>e.stopPropagation()}>
+                                    <button title="Add row"    onClick={e=>{e.stopPropagation();tableAddRow(ov.id);}}>+Row</button>
+                                    <button title="Remove row" onClick={e=>{e.stopPropagation();tableDelRow(ov.id);}}>−Row</button>
+                                    <button title="Add column"    onClick={e=>{e.stopPropagation();tableAddCol(ov.id);}}>+Col</button>
+                                    <button title="Remove column" onClick={e=>{e.stopPropagation();tableDelCol(ov.id);}}>−Col</button>
+                                  </div>
+                                )}
+                                {!isLocked(ov)&&activeCell&&activeCell.startsWith(ov.id+":")&&(()=>{
+                                  const [, rs, csi]=activeCell.split(":"); const r=+rs, c=+csi;
+                                  const cell=ov.tableData!.cells[r]?.[c];
+                                  if(!cell) return null;
+                                  return (
+                                    <div className="dp-ov-cell-bar" onMouseDown={e=>e.stopPropagation()}>
+                                      <button className={cell.bold?"on":""} title="Bold" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{bold:!cell.bold});}}><b>B</b></button>
+                                      <button className={cell.align==="left"?"on":""} title="Left" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"left"});}}>⬅</button>
+                                      <button className={cell.align==="center"?"on":""} title="Center" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"center"});}}>⬌</button>
+                                      <button className={cell.align==="right"?"on":""} title="Right" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"right"});}}>➡</button>
+                                      <label title="Cell background" style={{display:"inline-flex",alignItems:"center"}}>
+                                        <input type="color" value={cell.bg||"#ffffff"} onClick={e=>e.stopPropagation()}
+                                          onChange={e=>tableSetCell(ov.id,r,c,{bg:e.target.value})}
+                                          style={{width:20,height:18,padding:0,border:"none",background:"none",cursor:"pointer"}}/>
+                                      </label>
+                                      <button title="Clear background" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{bg:undefined});}}>✕bg</button>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
                             ):ov.type==="date"?(
-                              <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16}}>{ov.content}</span>
+                              <span data-ovid={ov.id} className="dp-pdf-overlay-date" style={{fontSize:ov.fontSize||16,color:ov.color||"#1c1917",fontWeight:ov.bold?700:400,textDecoration:ov.underline?"underline":"none"}}>{ov.content}</span>
                             ):(
                               <div data-ovid={ov.id} ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable suppressContentEditableWarning
                                 className="dp-pdf-overlay-text"
-                                style={{fontSize:ov.fontSize||16}}
+                                style={{fontSize:ov.fontSize||16,color:ov.color||"#1c1917",fontWeight:ov.bold?700:400,textDecoration:ov.underline?"underline":"none"}}
                                 onMouseDown={e=>{if(document.activeElement===e.currentTarget)e.stopPropagation();}}
                                 onClick={e=>e.stopPropagation()}
                                 onBlur={e=>{const txt=e.currentTarget.textContent||"";setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,content:txt}:o));setSaveStatus("unsaved");}}
                               >{ov.content}</div>
+                            )}
+                            {!isLocked(ov)&&(ov.type==="text"||ov.type==="date")&&(
+                              <div style={{position:"absolute",bottom:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:13}}>
+                                <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,bold:!o.bold}:o));setSaveStatus("unsaved");}}
+                                  title="Bold" style={{background:ov.bold?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 4px",borderRadius:3}}>B</button>
+                                <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,underline:!o.underline}:o));setSaveStatus("unsaved");}}
+                                  title="Underline" style={{background:ov.underline?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,textDecoration:"underline",cursor:"pointer",padding:"0 4px",borderRadius:3}}>U</button>
+                                <label title="Text colour" onMouseDown={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",cursor:"pointer"}}>
+                                  <input type="color" value={ov.color||"#1c1917"} onClick={e=>e.stopPropagation()}
+                                    onChange={e=>{const v=e.target.value;setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,color:v}:o));setSaveStatus("unsaved");}}
+                                    style={{width:18,height:16,padding:0,border:"none",background:"none",cursor:"pointer"}}/>
+                                </label>
+                              </div>
                             )}
                             {!isLocked(ov)&&<button className="dp-pdf-overlay-del"
                               onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>}
