@@ -119,11 +119,17 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
     setLoading(true); setStatus(null);
     const { data:{ user } } = await supabase.auth.getUser(); if (!user) return;
 
-    // ── PATH A: Not registered — send email invite via magic link ──
+    // ── PATH A: Not registered — send a DIRECT invite email via Resend ──
+    // We build the exact /join-org link and email it ourselves through the
+    // send-org-invite function, so the invite params are never stripped by a
+    // Supabase magic-link redirect. (The old signInWithOtp approach dropped the
+    // params and landed new users on the login screen — this is the fix.)
     if (found.id === "") {
       const token    = `${organizationId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
-      const joinLink = `${window.location.origin}/join-org?invite=${token}&org=${organizationId}&name=${encodeURIComponent(organizationName)}&email=${encodeURIComponent(found.email)}`;
+      const origin   = "https://nkoaha.space"; // canonical host (no www)
+      const joinLink = `${origin}/join-org?invite=${token}&org=${organizationId}&name=${encodeURIComponent(organizationName)}&email=${encodeURIComponent(found.email)}`;
 
+      // 1. Record the pending invite (token lets JoinOrg verify it later)
       const { error: invErr } = await supabase.from("organization_invites").insert({
         organization_id: organizationId,
         email:           found.email,
@@ -133,17 +139,18 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
       } as any);
       if (invErr) { setStatus({ type:"error", msg:"Failed to create invite: " + invErr.message }); setLoading(false); return; }
 
-      const { error: emailErr } = await supabase.auth.signInWithOtp({
-        email: found.email,
-        options: {
-          emailRedirectTo: joinLink,
-          shouldCreateUser: true,
-          data: { org_name: organizationName, invite_token: token },
-        },
+      // 2. Send our own branded email containing the direct /join-org link
+      const inviterName = user.email?.split("@")[0];
+      const { data: sendRes, error: sendErr } = await supabase.functions.invoke("send-org-invite", {
+        body: { to: found.email, orgName: organizationName, joinLink, inviterName },
       });
-      if (emailErr) { setStatus({ type:"error", msg:"Failed to send email: " + emailErr.message }); setLoading(false); return; }
+      if (sendErr || (sendRes as any)?.error) {
+        const detail = (sendRes as any)?.detail || (sendRes as any)?.error || sendErr?.message || "Unknown error";
+        setStatus({ type:"error", msg:"Invite saved, but the email failed to send: " + detail });
+        setLoading(false); return;
+      }
 
-      setStatus({ type:"success", msg:`📧 Email invite sent to ${found.email}. They will receive a signup link.` });
+      setStatus({ type:"success", msg:`📧 Email invite sent to ${found.email}. They'll get a link to join ${organizationName}.` });
       setFound(null); setEmail("");
       setLoading(false); return;
     }

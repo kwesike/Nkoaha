@@ -163,7 +163,8 @@ const STYLES = `
   .dp-ov-table{border-collapse:collapse;background:rgba(255,255,255,.92);box-shadow:0 0 0 1px rgba(124,58,237,.35);font-family:var(--font);color:#1c1917}
   .dp-ov-table td{border:1px solid #555;padding:3px 7px;min-width:36px;outline:none;vertical-align:top;line-height:1.3}
   .dp-ov-table td:focus{box-shadow:inset 0 0 0 2px var(--accent)}
-  .dp-ov-table-handle{display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:4px 4px 0 0;cursor:move;user-select:none;position:absolute;top:-18px;left:0}
+  .dp-ov-table-handle{display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;font-size:9px;font-family:var(--mono);padding:3px 9px;border-radius:4px 4px 0 0;cursor:move;user-select:none;position:absolute;top:-20px;left:0;z-index:40;pointer-events:auto;white-space:nowrap}
+  .dp-ov-table-handle:hover{filter:brightness(1.1)}
   .dp-ov-table-ctrls{position:absolute;top:-18px;right:0;display:flex;gap:3px}
   .dp-ov-table-ctrls button{background:rgba(0,0,0,.72);color:#fff;border:none;border-radius:4px;font-size:10px;font-family:var(--mono);padding:2px 5px;cursor:pointer}
   .dp-ov-table-ctrls button:hover{background:var(--accent)}
@@ -698,6 +699,7 @@ export default function DocumentsPage() {
       const openReadOnly=(location.state as any)?.readOnly;
       const canFork=(location.state as any)?.canForkEdit;
       const forkFolder=(location.state as any)?.myFolderId;
+      const wantComments=(location.state as any)?.openComments;
       if(openDocId){
         const target=allDocs.find((d:any)=>d.id===openDocId)
           || { id: openDocId, title: "Document", fileUrl: "", format: "pdf" as DocFormat, pages: 1 };
@@ -706,6 +708,11 @@ export default function DocumentsPage() {
         else { setForkCtx(null); }
         if(openReadOnly||canFork) setTimeout(()=>openOrgDocument(target),100);
         else if(allDocs.find((d:any)=>d.id===openDocId)) setTimeout(()=>openDocument(target),100);
+        // If arriving from an inbox "View & Reply", open the comment panel so the
+        // user can reply immediately.
+        if(wantComments){
+          setTimeout(()=>{ setShowComments(true); loadComments(openDocId); }, 400);
+        }
       }
 
       // ── Organisation Documents: only for org owners ──
@@ -3080,11 +3087,13 @@ export default function DocumentsPage() {
                             setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,Math.min(120,(o.fontSize||16)+delta))}:o));
                             setSaveStatus("unsaved");
                           }}>
+                          {ov.type!=="table"&&(
                           <div className="dp-overlay-resize">
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}>+</button>
                             <span>{ov.fontSize||16}px</span>
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}>−</button>
                           </div>
+                          )}
                           {ov.type==="image"?(
                             <img data-ovid={ov.id} src={ov.content} alt="attachment" crossOrigin="anonymous"
                               style={{width:ov.fontSize?ov.fontSize*8:160,maxWidth:400,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:3}}

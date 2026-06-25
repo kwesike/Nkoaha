@@ -120,6 +120,7 @@ export default function InboxPage() {
   const [loading, setLoading]     = useState(true);
   const [tab, setTab]             = useState<"pending"|"all">("pending");
   const [actioning, setActioning] = useState<string|null>(null);
+  const [role, setRole]           = useState<string>("individual");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -144,6 +145,12 @@ export default function InboxPage() {
     setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+
+    // Resolve the user's role so we can route them to the right dashboard's
+    // document view (a member's editor isn't at /dashboard/individual).
+    const { data: prof } = await supabase
+      .from("profiles").select("role").eq("id", user.id).maybeSingle();
+    if (prof?.role) setRole(prof.role);
 
     const { data } = await supabase
       .from("activity_logs")
@@ -213,11 +220,28 @@ export default function InboxPage() {
     loadInbox();
   }
 
-  // openDoc: navigate to document page and mark item as read
+  // Resolve the DocumentsPage route for this user's role. DocumentsPage is
+  // mounted at /dashboard/individual, /dashboard/organization and
+  // /dashboard/member — sending a member to /individual lands them on a page
+  // that never opens their document.
+  function docRouteForRole() {
+    return role === "organization" ? "/dashboard/organization"
+         : role === "organization_member" ? "/dashboard/member"
+         : "/dashboard/individual";
+  }
+
+  // openDoc: navigate to the correct document page and mark item as read.
+  // For comment notifications we also open the comments panel so the user can
+  // reply right away.
   async function openDoc(item: InboxItem) {
     await markRead(item);
     if (item.document_id) {
-      navigate("/dashboard/individual", { state: { openDocId: item.document_id } });
+      navigate(docRouteForRole(), {
+        state: {
+          openDocId: item.document_id,
+          openComments: item.action === "document_comment",
+        },
+      });
     } else {
       loadInbox();
     }
@@ -396,7 +420,7 @@ export default function InboxPage() {
                     {item.status === "pending" && item.action === "document_received" && (
                       <div className="ib-actions">
                         <button className="ib-btn ghost"
-                          onClick={()=>navigate("/dashboard/individual",{state:{openDocId:item.document_id}})}>
+                          onClick={()=>{markRead(item);navigate(docRouteForRole(),{state:{openDocId:item.document_id}})}}>
                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                           View Document
                         </button>
