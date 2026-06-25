@@ -480,38 +480,38 @@ function splitJsonIntoPages(doc: JSONContent): JSONContent[] {
   return pages.length?pages:[{ type:"doc",content:[{ type:"paragraph" }] }];
 }
 
-async function convertDocxToPdfViaCloudConvert(
-  docxFileUrl: string, documentId: string,
+async function convertDocxToPdfViaEdge(
+  docxFileUrl: string, _documentId: string,
   onConverted: (pdfBlob: Blob) => Promise<void>
 ): Promise<void> {
-  const API_KEY = import.meta.env.VITE_CLOUDCONVERT_API_KEY as string;
-  if (!API_KEY) throw new Error("VITE_CLOUDCONVERT_API_KEY not set in .env");
-  const BASE="https://api.cloudconvert.com/v2";
-  const headers={"Authorization":`Bearer ${API_KEY}`,"Content-Type":"application/json"};
-  const jobRes=await fetch(`${BASE}/jobs`,{method:"POST",headers,body:JSON.stringify({
-    tag:`nkoaha-${documentId}`,
-    tasks:{
-      "import-file":{operation:"import/url",url:docxFileUrl,filename:"document.docx"},
-      "convert-file":{operation:"convert",input:"import-file",input_format:"docx",output_format:"pdf",engine:"libreoffice"},
-      "export-file":{operation:"export/url",input:"convert-file",inline:false},
-    },
-  })});
-  if (!jobRes.ok) throw new Error(`CloudConvert failed: ${await jobRes.text()}`);
-  const jobId=(await jobRes.json()).data.id;
-  let pdfDownloadUrl="";
-  for (let i=0;i<60;i++) {
-    await new Promise(r=>setTimeout(r,2000));
-    const s=await(await fetch(`${BASE}/jobs/${jobId}`,{headers})).json();
-    if (s.data?.status==="finished") {
-      pdfDownloadUrl=s.data.tasks?.find((t:any)=>t.name==="export-file"&&t.status==="finished")?.result?.files?.[0]?.url??"";
-      break;
-    }
-    if (s.data?.status==="error") throw new Error("CloudConvert error");
+  // Fetch the uploaded Office file, then hand it to the secure edge function
+  // (convert-office-pdf), which converts it to PDF via iLovePDF server-side.
+  const srcRes = await fetch(docxFileUrl);
+  if (!srcRes.ok) throw new Error("Could not fetch the document to convert.");
+  const srcBlob = await srcRes.blob();
+
+  const form = new FormData();
+  form.append("file", srcBlob, "document.docx");
+
+  const { data, error } = await supabase.functions.invoke("convert-office-pdf", {
+    body: form,
+  });
+  if (error) throw new Error("Conversion service failed: " + error.message);
+
+  // The function returns the PDF bytes. supabase-js may give us a Blob,
+  // ArrayBuffer, or (on error) a JSON object — handle each.
+  let pdfBlob: Blob;
+  if (data instanceof Blob) {
+    pdfBlob = data.type === "application/pdf" ? data : new Blob([data], { type: "application/pdf" });
+  } else if (data instanceof ArrayBuffer) {
+    pdfBlob = new Blob([data], { type: "application/pdf" });
+  } else if (data && typeof data === "object" && (data as any).error) {
+    throw new Error("Conversion failed: " + ((data as any).detail || (data as any).error));
+  } else {
+    throw new Error("Conversion returned an unexpected response.");
   }
-  if (!pdfDownloadUrl) throw new Error("Conversion timed out");
-  const pdfRes=await fetch(pdfDownloadUrl);
-  if (!pdfRes.ok) throw new Error("Failed to download PDF");
-  await onConverted(await pdfRes.blob());
+  if (pdfBlob.size < 100) throw new Error("Conversion produced an empty PDF.");
+  await onConverted(pdfBlob);
 }
 
 export default function DocumentsPage() {
@@ -546,6 +546,10 @@ export default function DocumentsPage() {
   const [docxTool, setDocxTool]           = useState<"none"|"text"|"date"|"signature"|"table">("none");
   const [docxPdfDoc, setDocxPdfDoc]       = useState<any>(null);
   const [docxPdfReady, setDocxPdfReady]   = useState(false);
+  // DOCX is overlay-only: uploaded docs render as PDF and are annotated with
+  // overlays (no in-app text editing). Only app-created "new" docs are editable.
+  // docxEditMode is retained as a constant so the PDF-view guards read cleanly.
+  const docxEditMode = false;
   const [converting2Pdf, setConverting2Pdf] = useState(false);
   const docxPdfCanvasRefs = useRef<(HTMLCanvasElement|null)[]>([]);
   const [pdfDoc, setPdfDoc]           = useState<any>(null);
@@ -772,7 +776,7 @@ export default function DocumentsPage() {
   },[pdfDoc,activeDoc,totalPages]);
 
   useEffect(()=>{
-    if(!docxPdfDoc||activeDoc?.format!=="docx")return;
+    if(!docxPdfDoc||activeDoc?.format!=="docx"||docxEditMode)return;
     const go=async()=>{
       const first=Math.min(2,docxPdfDoc.numPages);
       for(let i=0;i<first;i++){const c=docxPdfCanvasRefs.current[i];if(c)await renderPdfPage(docxPdfDoc,i+1,c);}
@@ -780,8 +784,8 @@ export default function DocumentsPage() {
         setTimeout(async()=>{const c=docxPdfCanvasRefs.current[i];if(c)await renderPdfPage(docxPdfDoc,i+1,c);},(i-first+1)*300);
       }
     };
-    setTimeout(go,80);
-  },[docxPdfDoc,activeDoc,totalPages]);
+    setTimeout(go,120);
+  },[docxPdfDoc,activeDoc,totalPages,docxEditMode]);
 
   useEffect(()=>{
     if(!focusId)return;
@@ -813,7 +817,7 @@ export default function DocumentsPage() {
   const openDocument=async(doc:DocumentItem)=>{
     setLoading(true);
     setPdfDoc(null);setPdfOverlays([]);setPdfTool("none");
-    setDocxHtmlPages([]);setDocxOverlays([]);setDocxTool('none');setDocxPdfDoc(null);setDocxPdfReady(false);
+    setDocxHtmlPages([]);setDocxOverlays([]);setDocxTool("none");setDocxPdfDoc(null);setDocxPdfReady(false);
     setEditorPages([EMPTY_DOC]);
     setNewDocOverlays([]);
     setMyRoute(null);
@@ -885,7 +889,7 @@ export default function DocumentsPage() {
       }else{
         setConverting2Pdf(true);
         try{
-          await convertDocxToPdfViaCloudConvert(data?.file_url||doc.fileUrl,doc.id,async(pdfBlob:Blob)=>{
+          await convertDocxToPdfViaEdge(data?.file_url||doc.fileUrl,doc.id,async(pdfBlob:Blob)=>{
             const pdfPath=`docs/converted_${doc.id}_${Date.now()}.pdf`;
             const{error:upErr}=await supabase.storage.from("documents").upload(pdfPath,pdfBlob,{contentType:"application/pdf",upsert:true});
             if(upErr)throw new Error("PDF upload failed: "+upErr.message);
@@ -929,7 +933,7 @@ export default function DocumentsPage() {
   const openOrgDocument=async(doc:any)=>{
     setLoading(true);
     setPdfDoc(null);setPdfOverlays([]);setPdfTool("none");
-    setDocxHtmlPages([]);setDocxOverlays([]);setDocxTool('none');setDocxPdfDoc(null);setDocxPdfReady(false);
+    setDocxHtmlPages([]);setDocxOverlays([]);setDocxTool("none");setDocxPdfDoc(null);setDocxPdfReady(false);
     setEditorPages([EMPTY_DOC]);setNewDocOverlays([]);
     setMyRoute(null);
     pdfCanvasRefs.current=[];docxPdfCanvasRefs.current=[];
@@ -1788,7 +1792,7 @@ export default function DocumentsPage() {
     await logActivity("document_uploaded",data.id,data.title,user.id);
     // Kick off PDF conversion in background for DOCX
     if(format==="docx"&&fileUrl){
-      convertDocxToPdfViaCloudConvert(fileUrl,data.id,async(pdfBlob:Blob)=>{
+      convertDocxToPdfViaEdge(fileUrl,data.id,async(pdfBlob:Blob)=>{
         const pdfPath=`docs/converted_${data.id}.pdf`;
         const{error:upErr}=await supabase.storage.from("documents").upload(pdfPath,pdfBlob,{contentType:"application/pdf",upsert:true});
         if(!upErr){
@@ -2326,6 +2330,7 @@ export default function DocumentsPage() {
       setEmailSending(false);
     }
   };
+
 
   /* ── Bake page canvases + overlays into JPEG data URLs ── */
   // ── Precise bake: measures actual rendered DOM geometry so print/download
@@ -3236,7 +3241,7 @@ export default function DocumentsPage() {
                   <div className="dp-spinner" style={{width:14,height:14,borderWidth:2}}/> Converting to high-fidelity view…
                 </div>
               )}
-              {docxPdfReady&&docxPdfDoc&&(<>
+              {docxPdfReady&&docxPdfDoc&&!docxEditMode&&(<>
                 {/* Same toolbar as PDF */}
                 {!(activeDoc as any).isOrgDoc && <div className="dp-pdf-toolbar">
                   <span className="dp-pdf-toolbar-label">Place on document:</span>
@@ -3422,23 +3427,19 @@ export default function DocumentsPage() {
                   </div>
                 ))}
               </>)}
-              {docxHtmlPages.length>0&&(
-                <div style={{width:"var(--page-w)",maxWidth:"100%",marginTop:docxPdfReady?20:0}}>
-                  {docxPdfReady&&(
-                    <div style={{padding:"8px 0 6px",fontFamily:"var(--mono)",fontSize:11,color:"var(--muted)",display:"flex",alignItems:"center",gap:8}}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                      Edit document below — changes save automatically
-                    </div>
-                  )}
+              {docxHtmlPages.length>0&&!docxPdfReady&&(
+                <div style={{width:"var(--page-w)",maxWidth:"100%",marginTop:0}}>
+                  <div style={{padding:"8px 0 6px",fontFamily:"var(--mono)",fontSize:11,color:"var(--muted)",display:"flex",alignItems:"center",gap:8}}>
+                    <div className="dp-spinner" style={{width:13,height:13,borderWidth:2}}/>
+                    Preparing document view…
+                  </div>
                   {docxHtmlPages.map((pageHtml,i)=>(
-                    <div key={`${activeDoc.id}-docx-edit-${i}`}>
+                    <div key={`${activeDoc.id}-docx-prev-${i}`}>
                       {i>0&&<div className="dp-page-gap">Page {i+1}</div>}
                       <div className="dp-page-card" style={{overflow:"visible"}}>
-                        {!docxPdfReady&&<div className="dp-hf-bar"><input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0}/><span className="dp-hf-pagenum">{i+1} / {totalPages}</span></div>}
                         <DocxIframeEditor key={`${activeDoc.id}-iframe-${i}`} html={pageHtml}
-                          readOnly={(activeDoc as any).isOrgDoc}
-                          onSave={(newHtml:string)=>{if((activeDoc as any).isOrgDoc)return;setDocxHtmlPages(prev=>{const u=[...prev];u[i]=newHtml;return u;});setSaveStatus("unsaved");}}/>
-                        {!docxPdfReady&&<div className="dp-hf-bar footer"><input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0}/></div>}
+                          readOnly={true}
+                          onSave={()=>{}}/>
                       </div>
                     </div>
                   ))}
