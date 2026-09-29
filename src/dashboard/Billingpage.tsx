@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from ".././lib/supabase";
+import { supabase } from "../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 /* ─── Currency conversion (approximate rates) ─── */
@@ -39,7 +39,7 @@ const ORG_PLANS = [
 
 const IND_PLANS = [
   { id: "ind_monthly", name: "Monthly", docs: "50 documents",  price: 18000,  period: "per month", color: "#2563eb", bg: "#dbeafe", popular: true },
-  { id: "ind_yearly",  name: "Yearly",  docs: "Unlimited docs", price: 175000, period: "per year",  color: "#b45309", bg: "#fef9c3" },
+  { id: "ind_yearly",  name: "Yearly",  docs: "Unlimited docs", price: 195000, period: "per year",  color: "#b45309", bg: "#fef9c3" },
 ];
 
 const STYLES = `
@@ -126,11 +126,15 @@ const STYLES = `
   .bl-modal-btn.ghost{background:var(--bg);color:var(--muted);border:1.5px solid var(--border)}.bl-modal-btn.ghost:hover{background:var(--border)}
   .bl-flw-note{font-size:11px;color:var(--muted);text-align:center;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:5px}
 
+  .bl-result{padding:12px 14px;border-radius:9px;font-size:12.5px;line-height:1.55;margin-bottom:18px}
+  .bl-result.ok{background:var(--green-bg);color:#166534}
+  .bl-result.fail{background:var(--red-bg);color:#991b1b}
   .bl-section-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px}
   .bl-divider{height:1px;background:var(--border);margin:28px 0}
 `;
 
 const FLUTTERWAVE_PUBLIC_KEY = import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY || "";
+const PAYSTACK_PUBLIC_KEY   = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || "";
 
 export default function BillingPage() {
   const [role, setRole]           = useState<"individual"|"organization">("individual");
@@ -144,6 +148,11 @@ export default function BillingPage() {
   const [payMethod, setPayMethod] = useState<"card"|"transfer">("card");
   const [paying, setPaying]       = useState(false);
   const [activeSub, setActiveSub] = useState<any>(null);
+  const [userId, setUserId]       = useState("");
+  // Payment outcome shown in the UI — never a silent failure again.
+  const [result, setResult]       = useState<{ ok: boolean; text: string } | null>(null);
+  // Which processor is live, set by an admin in the portal. Paystack is NGN-only.
+  const [provider, setProvider]   = useState<"flutterwave"|"paystack">("flutterwave");
 
   useEffect(() => {
     const id = "bl-styles";
@@ -159,8 +168,17 @@ export default function BillingPage() {
     const { data: profile } = await supabase.from("profiles").select("email,role").eq("id", user.id).single();
     const r = profile?.role === "organization" ? "organization" : profile?.role === "organization_member" ? "organization" : "individual";
     setRole(r as any);
+    setUserId(user.id);
     setUserEmail(profile?.email || user.email || "");
     setUserName((profile?.email || user.email || "").split("@")[0]);
+
+    // Which payment processor is currently live (admin-controlled).
+    const { data: setting } = await supabase.from("app_settings")
+      .select("value").eq("key", "active_payment_provider").maybeSingle();
+    const prov = setting?.value === "paystack" ? "paystack" : "flutterwave";
+    setProvider(prov);
+    // Paystack is NGN-only here — force NGN so we never send it USD/EUR.
+    if (prov === "paystack") setCurrency("NGN");
 
     const { count: dc } = await supabase.from("documents").select("id", { count:"exact", head:true }).eq("owner_id", user.id).neq("status","deleted");
     setDocCount(dc||0);
@@ -206,6 +224,74 @@ export default function BillingPage() {
     return plan.price;
   }
 
+  /* Normalise a plan to a real billing period.
+     Individual plans carry a DISPLAY string ("per month"), not a period key —
+     feeding that into the expiry maths matched none of the branches and fell
+     through to the yearly default, so every individual monthly subscriber was
+     silently given a full year. Map by plan id instead. */
+  function planPeriodOf(plan: any): BillingPeriod {
+    if (plan?.monthly !== undefined) return period;           // org plans use the toggle
+    return plan?.id === "ind_yearly" ? "yearly" : "monthly";  // individual plans
+  }
+
+  /* Dispatch to whichever processor the admin has made live. */
+  function startCheckout(plan: any) {
+    if (provider === "paystack") initPaystack(plan);
+    else                         initFlutterwave(plan);
+  }
+
+  // ── Paystack (NGN only) ──
+  function initPaystack(plan: any) {
+    if (!PAYSTACK_PUBLIC_KEY) {
+      setPaying(false);
+      setResult({ ok: false, text: "Paystack isn't configured (missing public key). Contact support." });
+      return;
+    }
+    const planPeriod = planPeriodOf(plan);
+    const amountKobo = getPrice(plan) * 100; // Paystack takes kobo; NGN only.
+    // Reference encodes user + plan so the webhook can complete the sub even if
+    // the browser never returns.  nkoaha-<userId>-<planId>-<period>-NGN-<rand>
+    const reference = `nkoaha-${userId}-${plan.id}-${planPeriod}-NGN-${Math.random().toString(36).slice(2, 10)}`;
+
+    const launch = () => {
+      const handler = (window as any).PaystackPop?.setup({
+        key: PAYSTACK_PUBLIC_KEY,
+        email: userEmail,
+        amount: amountKobo,
+        currency: "NGN",
+        ref: reference,
+        // Metadata is echoed back to the webhook, so it can record the sub.
+        metadata: {
+          user_id: userId, plan_id: plan.id, period: planPeriod,
+          custom_fields: [{ display_name: "Plan", variable_name: "plan", value: plan.name }],
+        },
+        channels: payMethod === "transfer" ? ["bank_transfer"] : ["card"],
+        callback: (response: any) => {
+          // Paystack returns a reference on success; verify server-side.
+          finalisePayment(plan, planPeriod, "NGN", response?.reference || reference, reference);
+        },
+        onClose: () => {
+          setPaying(false);
+          if (payMethod === "transfer") {
+            setResult({ ok: true, text: "Checkout closed. Bank transfers confirm shortly — your plan activates automatically once it clears. Refresh this page in a moment." });
+          }
+        },
+      });
+      if (handler) handler.openIframe();
+      else { setPaying(false); setResult({ ok: false, text: "Could not open Paystack checkout. Try again." }); }
+    };
+
+    if (!(window as any).PaystackPop) {
+      const s = document.createElement("script");
+      s.src = "https://js.paystack.co/v1/inline.js";
+      s.onload = launch;
+      s.onerror = () => { setPaying(false); setResult({ ok: false, text: "Could not load Paystack. Check your connection and try again." }); };
+      document.head.appendChild(s);
+    } else {
+      launch();
+    }
+  }
+
   function initFlutterwave(plan: any) {
     const amount = getPrice(plan);
     const amountInCurrency = currency === "NGN" ? amount : currency === "USD" ? +(amount * NGN_TO_USD).toFixed(2) : +(amount * NGN_TO_EUR).toFixed(2);
@@ -216,6 +302,7 @@ export default function BillingPage() {
       const s = document.createElement("script");
       s.src = "https://checkout.flutterwave.com/v3.js";
       s.onload = () => launchFlutterwave(plan, amountInCurrency, curr);
+      s.onerror = () => { setPaying(false); setResult({ ok: false, text: "Could not load Flutterwave. Check your connection and try again." }); };
       document.head.appendChild(s);
     } else {
       launchFlutterwave(plan, amountInCurrency, curr);
@@ -223,9 +310,15 @@ export default function BillingPage() {
   }
 
   function launchFlutterwave(plan: any, amount: number, curr: Currency) {
+    const planPeriod = planPeriodOf(plan);
+    // The reference encodes WHO is buying WHAT, so the webhook can complete the
+    // subscription even if the browser never comes back (bank transfers).
+    // Shape: nkoaha-<userId>-<planId>-<period>-<currency>-<random>
+    const txRef = `nkoaha-${userId}-${plan.id}-${planPeriod}-${curr}-${Math.random().toString(36).slice(2, 10)}`;
+
     (window as any).FlutterwaveCheckout({
       public_key: FLUTTERWAVE_PUBLIC_KEY,
-      tx_ref:     `nkoaha-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      tx_ref:     txRef,
       amount,
       currency:   curr,
       payment_options: payMethod === "card" ? "card" : "banktransfer",
@@ -236,51 +329,114 @@ export default function BillingPage() {
       customizations: {
         title:       "NkoAha",
         description: `${plan.name} Plan`,
-        logo:        "https://nkoaha.com/logo.png",
+        logo:        "https://nkoaha.space/logo.png",
       },
       callback: async (response: any) => {
-        if (response.status === "successful" || response.status === "completed") {
-          // Record subscription in database
-          await recordSubscription(selectedPlan, response.transaction_id, response.tx_ref);
-          alert(`Payment successful! Your ${selectedPlan.name} plan is now active.`);
-          setSelectedPlan(null);
-          setPaying(false);
-          load(); // refresh stats
+        const txId = response?.transaction_id || response?.id;
+        if (response?.status === "successful" || response?.status === "completed") {
+          await finalisePayment(plan, planPeriod, curr, String(txId || ""), txRef);
         } else {
-          alert("Payment was not completed. Please try again.");
           setPaying(false);
+          setResult({
+            ok: false,
+            text: `Payment was not completed (status: ${response?.status || "unknown"}). If money did leave your account, quote reference ${txRef} to support.`,
+          });
         }
       },
-      onclose: () => { setPaying(false); },
+      onclose: () => {
+        setPaying(false);
+        // A bank transfer is confirmed by the bank AFTER this window closes, so
+        // silence here reads as failure. Say what is actually happening.
+        if (payMethod === "transfer") {
+          setResult({
+            ok: true,
+            text: "Checkout closed. Bank transfers are confirmed by the bank, which can take a few minutes — your plan activates automatically once it clears. Refresh this page shortly.",
+          });
+        }
+      },
     });
   }
 
-  async function recordSubscription(plan: any, txId: string, txRef: string) {
-    const { data: { user } } = await supabase.auth.getUser(); if (!user) return;
+  /* Verify the payment SERVER-SIDE, then record it.
+     The browser is never trusted for "did the money arrive" — the edge function
+     asks Flutterwave directly and writes with the service role (bypassing RLS). */
+  async function finalisePayment(
+    plan: any, planPeriod: BillingPeriod, curr: Currency, txId: string, txRef: string
+  ) {
+    try {
+      const { data, error } = await supabase.functions.invoke("verify-payment", {
+        body: {
+          provider,
+          transaction_id: txId,
+          tx_ref: txRef,
+          plan_id: plan.id,
+          period: planPeriod,
+          currency: curr,
+        },
+      });
 
-    // Calculate expiry based on period
+      if (!error && data && (data as any).ok) {
+        setResult({ ok: true, text: `Payment confirmed. Your ${plan.name} plan is now active.` });
+        setSelectedPlan(null);
+        setPaying(false);
+        await load();
+        return;
+      }
+
+      // The function replied with a real problem — show exactly what it said.
+      const detail = (data as any)?.error || error?.message || "";
+      if (detail && !/failed to send|fetch|not found|404/i.test(detail)) {
+        setPaying(false);
+        setResult({
+          ok: false,
+          text: `Payment could not be confirmed: ${detail}. Your reference is ${txRef} — send it to support and it will be sorted.`,
+        });
+        return;
+      }
+
+      // The function is unreachable (not deployed yet) — fall back to the direct
+      // write, but SURFACE any failure instead of swallowing it.
+      const fb = await recordSubscription(plan, planPeriod, curr, txId, txRef);
+      setPaying(false);
+      if (fb.ok) {
+        setResult({ ok: true, text: `Payment received. Your ${plan.name} plan is now active.` });
+        setSelectedPlan(null);
+        await load();
+      } else {
+        setResult({
+          ok: false,
+          text: `Your payment went through but the subscription could not be saved (${fb.error}). Nothing is lost — quote reference ${txRef} to support and your plan will be activated.`,
+        });
+      }
+    } catch (e: any) {
+      setPaying(false);
+      setResult({
+        ok: false,
+        text: `Your payment went through but confirmation failed (${e?.message || "unknown error"}). Quote reference ${txRef} to support.`,
+      });
+    }
+  }
+
+  /* Fallback local write, used only when the verify-payment function is
+     unreachable. Returns success/failure — the previous version ignored the
+     insert error entirely, which is how a paying user ended up on the free
+     tier with no record anywhere. */
+  async function recordSubscription(
+    plan: any, planPeriod: BillingPeriod, curr: Currency, txId: string, txRef: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return { ok: false, error: "your session expired during payment" };
+
+    // Expiry from a normalised period key (see planPeriodOf).
     const now = new Date();
-    let expiresAt: Date;
-    const planPeriod = plan.period as string || (plan.monthly !== undefined ? period : 'monthly');
-    if (planPeriod === 'daily')   { expiresAt = new Date(now.getTime() + 86400000); }
-    else if (planPeriod === 'weekly')  { expiresAt = new Date(now.getTime() + 7*86400000); }
-    else if (planPeriod === 'monthly') { expiresAt = new Date(now.setMonth(now.getMonth()+1)); }
-    else                               { expiresAt = new Date(now.setFullYear(now.getFullYear()+1)); }
+    const expiresAt = new Date(now);
+    if (planPeriod === 'yearly') expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    else                         expiresAt.setMonth(expiresAt.getMonth() + 1);
 
-    // Member limit per plan
-    const memberLimitMap: Record<string,number|null> = {
-      org_starter: 10, org_growth: 50, org_enterprise: null,
-    };
-    const docQuotaMap: Record<string,number|null> = {
-      ind_monthly: 50, ind_yearly: null,
-    };
-    // Partnership limit per org plan: Starter=1, Growth=unlimited, Enterprise=unlimited
-    const partnerLimitMap: Record<string,number|null> = {
-      org_starter: 1, org_growth: null, org_enterprise: null,
-    };
-    const orgDocLimitMap: Record<string,number|null> = {
-      org_starter: 100, org_growth: 500, org_enterprise: null,
-    };
+    const memberLimitMap: Record<string,number|null> = { org_starter: 10, org_growth: 50, org_enterprise: null };
+    const docQuotaMap:    Record<string,number|null> = { ind_monthly: 50, ind_yearly: null };
+    const partnerLimitMap:Record<string,number|null> = { org_starter: 1, org_growth: null, org_enterprise: null };
+    const orgDocLimitMap: Record<string,number|null> = { org_starter: 100, org_growth: 500, org_enterprise: null };
 
     let orgId: string | null = null;
     if (role === 'organization') {
@@ -288,13 +444,12 @@ export default function BillingPage() {
       orgId = org?.id || null;
     }
 
-    // Cancel old active subscriptions first, then insert new one
     await supabase.from('subscriptions')
       .update({ status: 'cancelled', updated_at: new Date().toISOString() })
       .eq('user_id', user.id)
       .eq('status', 'active');
 
-    await supabase.from('subscriptions').insert({
+    const { error } = await supabase.from('subscriptions').insert({
       user_id:       user.id,
       org_id:        orgId,
       plan_id:       plan.id,
@@ -306,29 +461,43 @@ export default function BillingPage() {
       org_doc_limit: orgDocLimitMap[plan.id] ?? null,
       period:        planPeriod,
       amount_ngn:    getPrice(plan),
-      currency,
+      currency:      curr,
       flw_tx_ref:    txRef,
       flw_tx_id:     String(txId),
       expires_at:    expiresAt.toISOString(),
     });
+
+    if (error) {
+      console.error("[Billing] subscription insert failed:", error);
+      return { ok: false, error: error.message };
+    }
+    return { ok: true };
   }
 
   async function handlePay() {
     if (!selectedPlan) return;
+    setResult(null);
     setPaying(true);
 
     // ── DEMO MODE: bypass Flutterwave, activate plan instantly ──
     const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
     if (DEMO_MODE) {
-      await recordSubscription(selectedPlan, "DEMO-TX-"+Date.now(), "DEMO-REF-"+Date.now());
-      alert(`Demo mode: ${selectedPlan.name} plan activated instantly.`);
-      setSelectedPlan(null);
+      const r = await recordSubscription(
+        selectedPlan, planPeriodOf(selectedPlan), currency,
+        "DEMO-TX-"+Date.now(), "DEMO-REF-"+Date.now()
+      );
       setPaying(false);
-      load();
+      if (r.ok) {
+        setResult({ ok: true, text: `Demo mode: ${selectedPlan.name} plan activated.` });
+        setSelectedPlan(null);
+        load();
+      } else {
+        setResult({ ok: false, text: `Demo activation failed: ${r.error}` });
+      }
       return;
     }
 
-    initFlutterwave(selectedPlan);
+    startCheckout(selectedPlan);
   }
 
   const freeUsage = role === "individual"
@@ -340,8 +509,13 @@ export default function BillingPage() {
       <div className="bl-root">
         <div className="bl-header">
           <div className="bl-title">Billing & Plans</div>
-          <div className="bl-sub">Choose a plan that works for your workflow. Powered by Flutterwave.</div>
+          <div className="bl-sub">Choose a plan that works for your workflow. Secure payments{provider === "paystack" ? " by Paystack" : " by Flutterwave"}.</div>
         </div>
+
+        {/* Payment outcome — replaces the alert() that lied about success */}
+        {result && (
+          <div className={`bl-result ${result.ok ? "ok" : "fail"}`}>{result.text}</div>
+        )}
 
         {/* Stats */}
         <div className="bl-stats">
@@ -394,11 +568,15 @@ export default function BillingPage() {
 
         {/* Currency + Period toggles (org only needs period) */}
         <div className="bl-controls">
-          <div className="bl-currency">
-            {(["NGN","USD","EUR"] as Currency[]).map(c=>(
-              <button key={c} className={`bl-currency-btn${currency===c?" active":""}`} onClick={()=>setCurrency(c)}>{c}</button>
-            ))}
-          </div>
+          {provider === "flutterwave" ? (
+            <div className="bl-currency">
+              {(["NGN","USD","EUR"] as Currency[]).map(c=>(
+                <button key={c} className={`bl-currency-btn${currency===c?" active":""}`} onClick={()=>setCurrency(c)}>{c}</button>
+              ))}
+            </div>
+          ) : (
+            <div className="bl-currency"><span className="bl-currency-btn active">NGN</span></div>
+          )}
           {role === "organization" && (
             <div className="bl-period">
               <button className={`bl-period-btn${period==="monthly"?" active":""}`} onClick={()=>setPeriod("monthly")}>Monthly</button>
@@ -420,7 +598,7 @@ export default function BillingPage() {
               const price = period === "monthly" ? plan.monthly : plan.yearly;
               return (
                 <div key={plan.id} className={`bl-plan${plan.popular?" popular":""}`}
-                  onClick={()=>setSelectedPlan({...plan, period})}>
+                  onClick={()=>{setResult(null);setSelectedPlan({...plan, period});}}>
                   {plan.popular && <div className="bl-popular-chip">Most Popular</div>}
                   <div className="bl-plan-name">{plan.name}</div>
                   <div className="bl-plan-members" style={{color:plan.color,fontWeight:600}}>{plan.members}</div>
@@ -450,7 +628,7 @@ export default function BillingPage() {
           <div className="bl-ind-plans">
             {IND_PLANS.map(plan => (
               <div key={plan.id} className={`bl-ind-plan${(plan as any).popular?" popular":""}`}
-                onClick={()=>setSelectedPlan(plan)}>
+                onClick={()=>{setResult(null);setSelectedPlan(plan);}}>
                 {(plan as any).popular && <div className="bl-popular-chip">Best Value</div>}
                 <div className="bl-ind-icon" style={{background:plan.bg}}>
                   {plan.id==="ind_monthly"?"🗓️":"♾️"}
@@ -494,7 +672,7 @@ export default function BillingPage() {
           <div className="bl-backdrop" onClick={()=>{if(!paying)setSelectedPlan(null);}}>
             <div className="bl-modal" onClick={e=>e.stopPropagation()}>
               <div className="bl-modal-title">Complete Your Purchase</div>
-              <div className="bl-modal-sub">Select a payment method to proceed via Flutterwave</div>
+              <div className="bl-modal-sub">Select a payment method to proceed via {provider === "paystack" ? "Paystack" : "Flutterwave"}</div>
 
               {/* Plan summary */}
               <div className="bl-plan-summary">
@@ -539,12 +717,17 @@ export default function BillingPage() {
 
               <div className="bl-modal-footer">
                 <button className="bl-modal-btn ghost" onClick={()=>setSelectedPlan(null)} disabled={paying}>Cancel</button>
-                <button className="bl-modal-btn primary" onClick={handlePay} disabled={paying||!FLUTTERWAVE_PUBLIC_KEY}>
+                <button className="bl-modal-btn primary" onClick={handlePay}
+                  disabled={paying || (provider === "paystack" ? !PAYSTACK_PUBLIC_KEY : !FLUTTERWAVE_PUBLIC_KEY)}>
                   {paying?"Opening Checkout…":`Pay ${fmt(getPrice(selectedPlan),currency)}`}
                 </button>
               </div>
 
-              {!FLUTTERWAVE_PUBLIC_KEY && (
+              {provider === "paystack" ? !PAYSTACK_PUBLIC_KEY && (
+                <div style={{fontSize:11.5,color:"var(--amber)",background:"var(--amber-bg)",padding:"8px 12px",borderRadius:7,marginTop:12,textAlign:"center"}}>
+                  ⚠️ Add <strong>VITE_PAYSTACK_PUBLIC_KEY</strong> to your .env to enable payments
+                </div>
+              ) : !FLUTTERWAVE_PUBLIC_KEY && (
                 <div style={{fontSize:11.5,color:"var(--amber)",background:"var(--amber-bg)",padding:"8px 12px",borderRadius:7,marginTop:12,textAlign:"center"}}>
                   ⚠️ Add <strong>VITE_FLUTTERWAVE_PUBLIC_KEY</strong> to your .env to enable payments
                 </div>
@@ -552,7 +735,7 @@ export default function BillingPage() {
 
               <div className="bl-flw-note">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                Secured by <strong style={{color:"#f5a623"}}>Flutterwave</strong> · 256-bit SSL encryption
+                Secured by <strong style={{color:"#f5a623"}}>{provider === "paystack" ? "Paystack" : "Flutterwave"}</strong> · 256-bit SSL encryption
               </div>
             </div>
           </div>

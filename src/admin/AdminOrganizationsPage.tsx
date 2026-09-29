@@ -58,8 +58,8 @@ export default function AdminOrganizationsPage() {
     setLoading(true);
     const { data: orgData } = await supabase
       .from("organizations")
-      .select("id,name,logo,owner_id,created_at")
-      .order("created_at", { ascending: false });
+      .select("id,name,logo,owner_id")
+      .order("name", { ascending: true });
 
     const { data: profiles } = await supabase
       .from("profiles")
@@ -119,10 +119,10 @@ export default function AdminOrganizationsPage() {
     return { label: "Free", cls: "free" };
   }
 
-  function timeAgo(iso: string) {
-    const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
-    return d === 0 ? "today" : d === 1 ? "yesterday" : `${d}d ago`;
-  }
+  //function timeAgo(iso: string) {
+    //const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    //return d === 0 ? "today" : d === 1 ? "yesterday" : `${d}d ago`;
+  //}
 
   function toggleExpand(id: string) {
     setExpanded(prev => {
@@ -185,7 +185,7 @@ export default function AdminOrganizationsPage() {
                     </div>
                     <div className="aorg-stat">
                       <div className="aorg-stat-label">Created</div>
-                      <div className="aorg-stat-val" style={{ fontSize: 12, paddingTop: 3 }}>{timeAgo(org.created_at)}</div>
+                      <div className="aorg-stat-val" style={{ fontSize: 12, paddingTop: 3 }}>—</div>
                     </div>
                   </div>
 
@@ -207,7 +207,7 @@ export default function AdminOrganizationsPage() {
                         {isExpanded ? "Hide members ↑" : `View ${orgMembers.length} member${orgMembers.length !== 1 ? "s" : ""} ↓`}
                       </button>
                     )}
-                    <span className="aorg-date">{org.created_at?.slice(0, 10)}</span>
+                    <span className="aorg-date">—</span>
                   </div>
                 </div>
               );

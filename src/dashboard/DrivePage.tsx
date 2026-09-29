@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from ".././lib/supabase";
+import { supabase } from "./../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 type Kind = "folder" | "file";
@@ -452,14 +452,61 @@ export default function DrivePage() {
     return null;
   }
 
+  /* Find something downloadable for a Drive file.
+     storage_path is only set for files uploaded THROUGH the Drive. Documents
+     created on the Documents page get their drive_items row from a DB trigger,
+     which never sets it — so those rows fall back to the linked document's
+     stored file. When we can recover a real storage path we write it back, so
+     the row heals itself and later downloads go straight through. */
+  async function resolveDownloadUrl(item: DriveItem): Promise<string | null> {
+    if (item.storage_path) {
+      const direct = await signedDriveUrl(item.storage_path, 300, { download: item.name });
+      if (direct) return direct;
+    }
+    if (!item.document_id) return null;
+
+    const { data: doc } = await supabase.from("documents")
+      .select("file_url,pdf_url").eq("id", item.document_id).maybeSingle();
+    const src: string | null = doc?.file_url || doc?.pdf_url || null;
+    if (!src) return null;
+
+    // A Supabase public URL carries the storage path — recover and sign it so
+    // the download works even if the bucket is private.
+    const m = src.match(/\/object\/(?:public|sign)\/([^/]+)\/(.+?)(?:\?|$)/);
+    if (m) {
+      const path = decodeURIComponent(m[2]);
+      const signed = await signedDriveUrl(path, 300, { download: item.name });
+      if (signed) {
+        // Heal the Drive row for next time (best effort — ignore failures).
+        supabase.from("drive_items").update({ storage_path: path }).eq("id", item.id);
+        return signed;
+      }
+    }
+    return src; // plain public URL
+  }
+
   async function downloadFile(item: DriveItem) {
-    if (!item.storage_path) return;
     setMsg({ type: "info", text: "Preparing download…" });
-    const url = await signedDriveUrl(item.storage_path, 120, { download: item.name });
-    setMsg(null);
-    if (!url) { setMsg({ type: "error", text: "Could not download this file. It may have been removed." }); return; }
-    const a = document.createElement("a"); a.href = url; a.download = item.name;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    const url = await resolveDownloadUrl(item);
+    if (!url) {
+      setMsg({ type: "error", text: `Could not find the stored file for "${item.name}". It may have been removed.` });
+      return;
+    }
+    try {
+      // Fetch as a blob: the download attribute is ignored on cross-origin
+      // URLs, which made some downloads silently open a tab instead.
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`server returned ${resp.status}`);
+      const blob = await resp.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objUrl; a.download = item.name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(objUrl);
+      setMsg(null);
+    } catch (e: any) {
+      setMsg({ type: "error", text: `Download failed: ${e?.message || "unknown error"}` });
+    }
   }
 
   // Load JSZip on demand from CDN (no npm install needed — matches how the
@@ -485,15 +532,18 @@ export default function DrivePage() {
 
       // Walk the folder tree, collecting files with their relative paths.
       // Each entry: { path: "Sub/Folder/name.pdf", storage_path }
-      const files: { path: string; storage_path: string }[] = [];
+      // Collect EVERY file, not only ones with a storage_path — files created
+      // on the Documents page have none, and were being silently dropped from
+      // the zip. resolveDownloadUrl finds them via their linked document.
+      const files: { path: string; item: DriveItem }[] = [];
       async function walk(parentId: string, prefix: string) {
         const { data: kids } = await supabase.from("drive_items")
-          .select("id,kind,name,storage_path").eq("parent_id", parentId);
-        for (const k of (kids || [])) {
+          .select("*").eq("parent_id", parentId);
+        for (const k of ((kids || []) as DriveItem[])) {
           if (k.kind === "folder") {
             await walk(k.id, `${prefix}${k.name}/`);
-          } else if (k.storage_path) {
-            files.push({ path: `${prefix}${k.name}`, storage_path: k.storage_path });
+          } else {
+            files.push({ path: `${prefix}${k.name}`, item: k });
           }
         }
       }
@@ -508,7 +558,7 @@ export default function DrivePage() {
       // Fetch each file's bytes (via a short-lived signed URL) and add to the zip.
       let added = 0;
       for (const f of files) {
-        const url = await signedDriveUrl(f.storage_path, 300);
+        const url = await resolveDownloadUrl(f.item);
         if (!url) continue;
         const resp = await fetch(url);
         if (!resp.ok) continue;
