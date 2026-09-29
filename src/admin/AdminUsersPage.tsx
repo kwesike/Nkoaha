@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "./../lib/supabase";
+import { supabase } from "../lib/supabase";
 import AdminLayout from "./AdminLayout";
 
 const STYLES = `
@@ -32,6 +32,7 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     const id = "au-styles";
@@ -60,6 +61,27 @@ export default function AdminUsersPage() {
     if (!confirm(`Change this user's role to "${newRole}"?`)) return;
     await supabase.from("profiles").update({ role: newRole }).eq("id", userId);
     setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
+  }
+
+  async function deleteUser(userId: string, email: string) {
+    // Two-step confirm — deletion is permanent and cascades their data.
+    if (!confirm(`Delete ${email}? This permanently removes their account and data. This cannot be undone.`)) return;
+    if (!confirm(`Are you absolutely sure? Type-check: this will delete ${email} for good.`)) return;
+    setDeletingId(userId);
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-delete-user", {
+        body: { user_id: userId },
+      });
+      if (error || (data && (data as any).error)) {
+        alert("Could not delete user: " + (error?.message || (data as any)?.error || "unknown error"));
+        return;
+      }
+      setUsers(prev => prev.filter(u => u.id !== userId));
+    } catch (e: any) {
+      alert("Could not delete user: " + (e?.message || "unknown error"));
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   function planLabel(plan: string) {
@@ -122,6 +144,11 @@ export default function AdminUsersPage() {
                       {u.role === "admin" && (
                         <button className="au-btn danger" onClick={() => changeRole(u.id, "individual")}>Remove Admin</button>
                       )}
+                      <button className="au-btn danger"
+                        disabled={deletingId === u.id}
+                        onClick={() => deleteUser(u.id, u.email)}>
+                        {deletingId === u.id ? "Deleting…" : "Delete"}
+                      </button>
                     </div>
                   </td>
                 </tr>
