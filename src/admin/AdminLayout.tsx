@@ -87,12 +87,61 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
     setSupportUnread(count);
   }
 
-  // Realtime badge update
+  // Ask for browser-notification permission once the admin is in.
+  useEffect(() => {
+    if (!ready) return;
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, [ready]);
+
+  // Short attention beep via WebAudio (no asset file needed).
+  function playChime() {
+    try {
+      const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(1174, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.36);
+      osc.onended = () => ctx.close();
+    } catch { /* audio not available — badge still updates */ }
+  }
+
+  // Fire a browser notification (works even when this tab isn't focused, as
+  // long as the admin has the site open in some tab and granted permission).
+  function notifyNewChat() {
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        const n = new Notification("New support message", {
+          body: "A user just sent a message in support chat.",
+          tag: "nkoaha-support",
+        });
+        n.onclick = () => { window.focus(); navigate("/dashboard/admin/support"); n.close(); };
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Realtime: badge + sound + browser notification on a new USER message.
   useEffect(() => {
     if (!ready) return;
     const ch = supabase.channel("admin-support-badge")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity_logs" },
-        () => loadUnread())
+        (payload: any) => {
+          loadUnread();
+          if (payload?.new?.action === "support_message") {
+            playChime();
+            notifyNewChat();
+          }
+        })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [ready]);
