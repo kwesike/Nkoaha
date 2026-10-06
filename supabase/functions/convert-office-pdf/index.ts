@@ -45,6 +45,13 @@ serve(async (req) => {
     }
     const filename = (file.name || "document.docx").replace(/[^a-zA-Z0-9._-]/g, "_");
 
+    // Which iLovePDF tool to run. Defaults to officepdf (Office→PDF) so existing
+    // callers keep working. convert-before-send passes others, e.g. pdfoffice
+    // (PDF→Word). Allow-list to avoid arbitrary tool strings.
+    const TOOLS = ["officepdf", "pdfoffice"];
+    const requestedTool = String(form.get("tool") || "officepdf");
+    const tool = TOOLS.includes(requestedTool) ? requestedTool : "officepdf";
+
     // ── 1. Auth: get a JWT from the public key ──
     const authRes = await fetch(`${API}/v1/auth`, {
       method: "POST",
@@ -58,8 +65,8 @@ serve(async (req) => {
     if (!token) return json({ error: "iLovePDF auth returned no token." }, 502);
     const bearer = { Authorization: `Bearer ${token}` };
 
-    // ── 2. Start an officepdf task → assigned server + task id ──
-    const startRes = await fetch(`${API}/v1/start/officepdf`, { headers: bearer });
+    // ── 2. Start the conversion task → assigned server + task id ──
+    const startRes = await fetch(`${API}/v1/start/${tool}`, { headers: bearer });
     if (!startRes.ok) {
       return json({ error: "iLovePDF start failed", detail: await safeText(startRes) }, 502);
     }
@@ -95,7 +102,7 @@ serve(async (req) => {
       headers: { ...bearer, "Content-Type": "application/json" },
       body: JSON.stringify({
         task,
-        tool: "officepdf",
+        tool,
         files: [{ server_filename: serverFilename, filename }],
       }),
     });
@@ -103,18 +110,24 @@ serve(async (req) => {
       return json({ error: "iLovePDF process failed", detail: await safeText(procRes) }, 502);
     }
 
-    // ── 5. Download the resulting PDF ──
+    // ── 5. Download the result ──
     const dlRes = await fetch(`${base}/v1/download/${task}`, { headers: bearer });
     if (!dlRes.ok) {
       return json({ error: "iLovePDF download failed", detail: await safeText(dlRes) }, 502);
     }
-    const pdfBytes = new Uint8Array(await dlRes.arrayBuffer());
+    const outBytes = new Uint8Array(await dlRes.arrayBuffer());
 
-    return new Response(pdfBytes, {
+    // Output type depends on the tool: officepdf→pdf, pdfoffice→docx.
+    const outExt  = tool === "pdfoffice" ? "docx" : "pdf";
+    const outMime = tool === "pdfoffice"
+      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      : "application/pdf";
+
+    return new Response(outBytes, {
       headers: {
         ...CORS,
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename.replace(/\.[^.]+$/, "")}.pdf"`,
+        "Content-Type": outMime,
+        "Content-Disposition": `attachment; filename="${filename.replace(/\.[^.]+$/, "")}.${outExt}"`,
       },
     });
   } catch (e) {

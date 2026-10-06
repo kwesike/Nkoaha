@@ -242,6 +242,14 @@ async function loadJsPdf(): Promise<any> {
   return (window as any).jspdf;
 }
 
+// html-docx-js: converts an HTML string into a .docx Blob (for exporting
+// editable documents to Word). Loaded on demand from CDN.
+async function loadHtmlDocx(): Promise<any> {
+  if ((window as any).htmlDocx) return (window as any).htmlDocx;
+  await loadScript("https://unpkg.com/html-docx-js/dist/html-docx.js");
+  return (window as any).htmlDocx;
+}
+
 async function loadPdfJs(): Promise<any> {
   if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
   return new Promise((resolve, reject) => {
@@ -273,6 +281,25 @@ async function resolveStorageUrl(pathOrUrl: string): Promise<string> {
     if (data?.signedUrl) return data.signedUrl;
   }
   return "";
+}
+
+/* ── Private-bucket document resolver ──
+   The documents bucket is private, so a stored PUBLIC url no longer works.
+   This takes whatever is stored (a bare path like "docs/x.pdf", OR a legacy
+   public URL that embeds the path) and always returns a FRESH signed URL.
+   Use this everywhere a document's file_url/pdf_url is loaded. */
+async function resolveDocUrl(stored: string): Promise<string> {
+  if (!stored) return "";
+  let path = stored;
+  // If a full Supabase URL was stored, pull the path after /documents/.
+  const m = stored.match(/\/object\/(?:public|sign)\/documents\/([^?]+)/);
+  if (m) path = decodeURIComponent(m[1]);
+  else if (stored.startsWith("http")) {
+    // A non-Supabase URL (shouldn't happen for docs) — return as-is.
+    return stored;
+  }
+  const { data } = await supabase.storage.from("documents").createSignedUrl(path, 3600);
+  return data?.signedUrl || "";
 }
 
 async function renderPdfPage(pdfDoc: any, pageNum: number, canvas: HTMLCanvasElement) {
@@ -855,7 +882,9 @@ export default function DocumentsPage() {
     const fmt=data?.format||doc.format;
 
     if(fmt==="pdf"){
-      const url=data?.file_url||doc.fileUrl;
+      const stored=data?.file_url||doc.fileUrl;
+      if(!stored){setLoading(false);return;}
+      const url=await resolveDocUrl(stored);
       if(!url){setLoading(false);return;}
       try{
         const pdfjs=await loadPdfJs();
@@ -881,7 +910,7 @@ export default function DocumentsPage() {
         setDocxPdfReady(true);
         try{
           const pdfjs=await loadPdfJs();
-          const resp=await fetch(data.pdf_url);
+          const resp=await fetch(await resolveDocUrl(data.pdf_url));
           const buf=await resp.arrayBuffer();
           const loaded=await pdfjs.getDocument({data:new Uint8Array(buf)}).promise;
           setDocxPdfDoc(loaded);setTotalPages(loaded.numPages);
@@ -889,11 +918,11 @@ export default function DocumentsPage() {
       }else{
         setConverting2Pdf(true);
         try{
-          await convertDocxToPdfViaEdge(data?.file_url||doc.fileUrl,doc.id,async(pdfBlob:Blob)=>{
+          await convertDocxToPdfViaEdge(await resolveDocUrl(data?.file_url||doc.fileUrl),doc.id,async(pdfBlob:Blob)=>{
             const pdfPath=`docs/converted_${doc.id}_${Date.now()}.pdf`;
             const{error:upErr}=await supabase.storage.from("documents").upload(pdfPath,pdfBlob,{contentType:"application/pdf",upsert:true});
             if(upErr)throw new Error("PDF upload failed: "+upErr.message);
-            const pdfUrl=supabase.storage.from("documents").getPublicUrl(pdfPath).data.publicUrl;
+            const pdfUrl=pdfPath; // store PATH, not public URL (private bucket)
             await supabase.from("documents").update({pdf_url:pdfUrl,pdf_ready:true}).eq("id",doc.id);
             setDocxPdfReady(true);
             const pdfjs=await loadPdfJs();
@@ -954,7 +983,7 @@ export default function DocumentsPage() {
     const fmt=data?.format||doc.format;
 
     if(fmt==="pdf"){
-      const url=data?.file_url||doc.fileUrl;
+      const url=await resolveDocUrl(data?.file_url||doc.fileUrl);
       if(url){
         try{
           const pdfjs=await loadPdfJs();
@@ -979,7 +1008,7 @@ export default function DocumentsPage() {
         setDocxPdfReady(true);
         try{
           const pdfjs=await loadPdfJs();
-          const resp=await fetch(data.pdf_url);const buf=await resp.arrayBuffer();
+          const resp=await fetch(await resolveDocUrl(data.pdf_url));const buf=await resp.arrayBuffer();
           const loaded=await pdfjs.getDocument({data:new Uint8Array(buf)}).promise;
           setDocxPdfDoc(loaded);setTotalPages(loaded.numPages);
         }catch(e){console.error(e);}
@@ -1698,6 +1727,209 @@ export default function DocumentsPage() {
     return true;
   };
 
+  // ── Convert a document to another format, saving a COPY (original intact) ──
+  // Counts as creating a document, so it respects the same tier limits.
+  // Returns the new document id, or null on failure/limit.
+  const [showConvert, setShowConvert] = useState(false);
+  const [showDownloadFmt, setShowDownloadFmt] = useState(false); // editable-doc format picker
+  const [showSignGuide, setShowSignGuide] = useState(false); // editable-doc signing guidance
+  const [convBeforeSend, setConvBeforeSend] = useState(false); // route-modal checkbox
+  const [convMsg, setConvMsg] = useState<{type:"info"|"error";text:string}|null>(null); // convert feedback
+
+  /* Build basic TipTap JSON from HTML (headings, paragraphs, lists, bold/italic).
+     Produces genuinely editable content using StarterKit primitives. Complex
+     layout (tables as grids, columns, exact positioning) flattens — that's the
+     inherent trade-off of making a document editable. */
+  function htmlToTipTapJson(html: string): JSONContent {
+    const dom = new DOMParser().parseFromString(html, "text/html");
+    const inlineMarks = (node: Node): any[] => {
+      // Collect text with marks (bold/italic/underline) from inline nodes.
+      const out: any[] = [];
+      node.childNodes.forEach(child => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          const text = child.textContent || "";
+          if (text) out.push({ type:"text", text });
+        } else if (child.nodeType === Node.ELEMENT_NODE) {
+          const el = child as HTMLElement;
+          const tag = el.tagName.toLowerCase();
+          const marks: any[] = [];
+          if (tag==="strong"||tag==="b") marks.push({ type:"bold" });
+          if (tag==="em"||tag==="i")     marks.push({ type:"italic" });
+          if (tag==="u")                 marks.push({ type:"underline" });
+          const text = el.textContent || "";
+          if (text) out.push({ type:"text", text, ...(marks.length?{marks}:{}) });
+        }
+      });
+      return out.length ? out : [];
+    };
+    const content: any[] = [];
+    Array.from(dom.body.children).forEach(el => {
+      const tag = el.tagName.toLowerCase();
+      if (/^h[1-6]$/.test(tag)) {
+        const level = Math.min(3, parseInt(tag[1]));
+        content.push({ type:"heading", attrs:{ level }, content: inlineMarks(el) });
+      } else if (tag==="ul"||tag==="ol") {
+        const items: any[] = [];
+        el.querySelectorAll(":scope > li").forEach(li => {
+          items.push({ type:"listItem", content:[{ type:"paragraph", content: inlineMarks(li) }] });
+        });
+        content.push({ type: tag==="ul"?"bulletList":"orderedList", content: items });
+      } else if (tag==="table") {
+        // Flatten table rows to paragraphs (editor may lack table support).
+        el.querySelectorAll("tr").forEach(tr => {
+          const cells = Array.from(tr.querySelectorAll("td,th")).map(c=>c.textContent?.trim()||"").join("  |  ");
+          if (cells) content.push({ type:"paragraph", content:[{ type:"text", text: cells }] });
+        });
+      } else {
+        const inline = inlineMarks(el);
+        content.push({ type:"paragraph", content: inline.length?inline:[] });
+      }
+    });
+    if (!content.length) content.push({ type:"paragraph" });
+    return { type:"doc", content };
+  }
+  async function convertDocument(targetFormat: "pdf"|"docx", opts?: { silent?: boolean; asEditable?: boolean }): Promise<string|null> {
+    const { data:{ user } } = await supabase.auth.getUser();
+    if(!user || !activeDoc) return null;
+    const currentFormat = activeDoc.format;
+
+    // Same format = nothing to convert.
+    if(currentFormat === targetFormat){
+      if(!opts?.silent) alert(`This document is already a ${targetFormat.toUpperCase()}.`);
+      return activeDoc.id;
+    }
+    // DOCX→PDF via iLovePDF (officepdf); PDF→DOCX via ConvertAPI.
+    const supported = (currentFormat==="docx"&&targetFormat==="pdf") || (currentFormat==="pdf"&&targetFormat==="docx");
+    if(!supported){
+      setConvMsg({type:"error",text:`Converting ${currentFormat?.toUpperCase()} to ${targetFormat.toUpperCase()} isn't available yet.`});
+      return null;
+    }
+    // Tier limit — a conversion creates a new document.
+    if(!(await checkDocLimit(user.id))) return null;
+
+    setConverting(true);
+    setConvMsg({type:"info",text:`Converting to ${targetFormat.toUpperCase()}… this can take a few seconds.`});
+    try{
+      // Fetch the current document's bytes (signed URL for the private bucket).
+      const srcStored = (activeDoc as any).fileUrl;
+      const srcUrl = await resolveDocUrl(srcStored);
+      if(!srcUrl) throw new Error("Couldn't read the source document.");
+      const srcResp = await fetch(srcUrl);
+      if(!srcResp.ok) throw new Error("Couldn't download the source document.");
+      const srcBlob = await srcResp.blob();
+
+      // Route to the right provider:
+      //   DOCX→PDF  → iLovePDF (convert-office-pdf, officepdf)
+      //   PDF→DOCX  → ConvertAPI (convert-pdf-to-word)
+      // Both return raw binary, so we call the function with fetch and read the
+      // body as a Blob — supabase.functions.invoke mangles binary into a string.
+      const fd = new FormData();
+      fd.append("file", srcBlob, `document.${currentFormat}`);
+      const fnName = currentFormat==="docx" ? "convert-office-pdf" : "convert-pdf-to-word";
+      if(currentFormat==="docx") fd.append("tool","officepdf");
+
+      const { data:{ session } } = await supabase.auth.getSession();
+      const supaUrl = (supabase as any).supabaseUrl || import.meta.env.VITE_SUPABASE_URL;
+      const resp = await fetch(`${supaUrl}/functions/v1/${fnName}`, {
+        method:"POST",
+        headers:{ Authorization:`Bearer ${session?.access_token||""}` },
+        body: fd,
+      });
+      const ctype = resp.headers.get("content-type")||"";
+      if(!resp.ok || ctype.includes("application/json")){
+        // Error responses come back as JSON with { error, detail }.
+        let msg = `Conversion failed (${resp.status}).`;
+        try{ const j=await resp.json(); if(j?.error) msg = j.error + (j.detail?" — "+j.detail:""); }catch(_){}
+        throw new Error(msg);
+      }
+      const outBlob: Blob = await resp.blob();
+      if(outBlob.size < 100) throw new Error("Conversion produced an empty file.");
+
+      const newId = crypto.randomUUID();
+      const outPath = `docs/converted_${newId}.${targetFormat}`;
+
+      // Extract HTML from the DOCX (needed for both the overlay DOCX preview
+      // and the editable path).
+      let htmlContent: string|null = null;
+      if(targetFormat==="docx"){
+        try{
+          const mammoth = await import("mammoth");
+          const { value } = await (mammoth as any).convertToHtml({ arrayBuffer: await outBlob.arrayBuffer() });
+          htmlContent = value || "";
+        }catch{ htmlContent = ""; }
+      }
+
+      const baseTitle = (activeDoc.title||"Document").replace(/\.(pdf|docx)$/i,"");
+
+      // ── EDITABLE path: create a "new" (app-editor) document from the HTML ──
+      // Opens in the full TipTap editor — fully click-to-edit. Layout reflows.
+      if(opts?.asEditable && targetFormat==="docx"){
+        const tiptapJson = htmlToTipTapJson(htmlContent || "<p></p>");
+        const { data: newDoc, error: docErr } = await supabase.from("documents").insert({
+          id: newId,
+          owner_id: user.id, sender_id: user.id, uploaded_by: user.id,
+          owner_type: (activeDoc as any).isOrgDoc ? "organization" : "individual",
+          organization_id: (activeDoc as any).organizationId ?? null,
+          document_kind: "editor",
+          format: "new",
+          title: baseTitle + " (Editable)",
+          content: tiptapJson,
+          file_url: "",
+          status: "draft",
+          pages: 1,
+        }).select("id").single();
+        if(docErr || !newDoc) throw new Error("Couldn't create the editable document: "+(docErr?.message||"unknown"));
+        setConverting(false); setConvMsg(null); setShowConvert(false);
+        const nd:DocumentItem={ id:newDoc.id, title:baseTitle+" (Editable)", fileUrl:"", format:"new", pages:1 };
+        setDocuments(prev=>[nd,...prev]);
+        if(!opts?.silent){
+          // Open it straight in the editor so they can start editing.
+          openDocument(nd);
+        }
+        return newDoc.id;
+      }
+
+      // ── OVERLAY-ONLY path: store the file, create an upload-format doc ──
+      const { error: upErr } = await supabase.storage.from("documents").upload(outPath, outBlob, {
+        contentType: targetFormat==="pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        upsert: true,
+      });
+      if(upErr) throw new Error("Couldn't save the converted file: "+upErr.message);
+
+      const { data: newDoc, error: docErr } = await supabase.from("documents").insert({
+        id: newId,
+        owner_id: user.id, sender_id: user.id, uploaded_by: user.id,
+        owner_type: (activeDoc as any).isOrgDoc ? "organization" : "individual",
+        organization_id: (activeDoc as any).organizationId ?? null,
+        document_kind: "upload",
+        format: targetFormat,
+        title: baseTitle + ` (${targetFormat.toUpperCase()})`,
+        file_url: outPath,                 // PATH, not public URL
+        html_content: htmlContent,
+        status: "draft",
+        pages: 1,
+      }).select("id").single();
+      if(docErr || !newDoc) throw new Error("Couldn't create the converted document: "+(docErr?.message||"unknown"));
+
+      setConverting(false);
+      setConvMsg(null);
+      setShowConvert(false);
+      const nd:DocumentItem={ id:newDoc.id,
+        title:baseTitle+` (${targetFormat.toUpperCase()})`,
+        fileUrl:outPath, format:targetFormat, pages:1 } as DocumentItem;
+      setDocuments(prev=>[nd,...prev]);
+      if(!opts?.silent){
+        alert(`Converted to ${targetFormat.toUpperCase()}. The copy is now in your documents. Your original is unchanged.`);
+      }
+      return newDoc.id;
+    }catch(e:any){
+      setConverting(false);
+      // Keep the modal open and show the error inline so the user sees context.
+      setConvMsg({type:"error",text:(e?.message || "Conversion failed. Please try again.")});
+      return null;
+    }
+  }
+
   const createNew=async()=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     if(!(await checkDocLimit(user.id)))return;
@@ -1760,7 +1992,7 @@ export default function DocumentsPage() {
     try{
       const path=`docs/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
       const{error:upErr}=await supabase.storage.from("documents").upload(path,file);
-      if(!upErr)fileUrl=supabase.storage.from("documents").getPublicUrl(path).data.publicUrl;
+      if(!upErr)fileUrl=path; // store the PATH, not a public URL (bucket is private)
       if(file.name.match(/\.docx$/i)){
         format="docx";htmlContent=await docxToHtml(await file.arrayBuffer());
         pages=splitDocxHtmlIntoPages(htmlContent).length;
@@ -1792,11 +2024,11 @@ export default function DocumentsPage() {
     await logActivity("document_uploaded",data.id,data.title,user.id);
     // Kick off PDF conversion in background for DOCX
     if(format==="docx"&&fileUrl){
-      convertDocxToPdfViaEdge(fileUrl,data.id,async(pdfBlob:Blob)=>{
+      convertDocxToPdfViaEdge(await resolveDocUrl(fileUrl),data.id,async(pdfBlob:Blob)=>{
         const pdfPath=`docs/converted_${data.id}.pdf`;
         const{error:upErr}=await supabase.storage.from("documents").upload(pdfPath,pdfBlob,{contentType:"application/pdf",upsert:true});
         if(!upErr){
-          const pdfUrl=supabase.storage.from("documents").getPublicUrl(pdfPath).data.publicUrl;
+          const pdfUrl=pdfPath; // store PATH, not public URL (private bucket)
           await supabase.from("documents").update({pdf_url:pdfUrl,pdf_ready:true}).eq("id",data.id);
         }
       }).catch(e=>console.warn("Background conversion failed:",e));
@@ -2340,8 +2572,57 @@ export default function DocumentsPage() {
     if(!activeDoc)return[];
 
     if(activeDoc.format==="new"){
-      const pm=canvasAreaRef.current?.querySelector(".ProseMirror");
-      return["__new__:"+(pm?.innerHTML??"")];
+      // Capture EVERY editor page from the live DOM (clone + bake computed block
+      // styles inline so print doesn't depend on ProseMirror's stylesheet).
+      // Search canvasAreaRef first, then the whole document as a fallback.
+      let editors=canvasAreaRef.current?.querySelectorAll(".ProseMirror");
+      if(!editors || !editors.length) editors=document.querySelectorAll(".ProseMirror");
+      let html="";
+      if(editors && editors.length){
+        editors.forEach((pm,idx)=>{
+          const clone=(pm as HTMLElement).cloneNode(true) as HTMLElement;
+          const src=(pm as HTMLElement).querySelectorAll("p,h1,h2,h3,h4,li,ul,ol,td,th");
+          const dst=clone.querySelectorAll("p,h1,h2,h3,h4,li,ul,ol,td,th");
+          src.forEach((el,i)=>{
+            const cs=window.getComputedStyle(el as HTMLElement);
+            const d=dst[i] as HTMLElement; if(!d)return;
+            d.style.margin=cs.margin; d.style.padding=cs.padding;
+            d.style.fontSize=cs.fontSize; d.style.fontWeight=cs.fontWeight;
+            d.style.lineHeight=cs.lineHeight; d.style.textAlign=cs.textAlign;
+            d.style.display=cs.display || "block";
+          });
+          html += `<div class="nd-page"${idx>0?' style="page-break-before:always"':''}>${clone.innerHTML}</div>`;
+        });
+      }
+      // FALLBACK: if the live DOM capture came back empty (editor not mounted/
+      // found), rebuild HTML from the saved editor pages so export is never blank.
+      if(!html.trim()){
+        try{
+          const blocksToHtml=(node:any):string=>{
+            if(!node) return "";
+            if(node.type==="text"){
+              let t=(node.text||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+              (node.marks||[]).forEach((m:any)=>{
+                if(m.type==="bold") t=`<strong>${t}</strong>`;
+                else if(m.type==="italic") t=`<em>${t}</em>`;
+                else if(m.type==="underline") t=`<u>${t}</u>`;
+              });
+              return t;
+            }
+            const inner=(node.content||[]).map(blocksToHtml).join("");
+            switch(node.type){
+              case "heading": return `<h${Math.min(3,node.attrs?.level||1)}>${inner}</h${Math.min(3,node.attrs?.level||1)}>`;
+              case "paragraph": return `<p>${inner||"&nbsp;"}</p>`;
+              case "bulletList": return `<ul>${inner}</ul>`;
+              case "orderedList": return `<ol>${inner}</ol>`;
+              case "listItem": return `<li>${inner}</li>`;
+              default: return inner;
+            }
+          };
+          html = editorPages.map(pg=>(pg.content||[]).map(blocksToHtml).join("")).join('<div style="page-break-before:always"></div>');
+        }catch(e){ console.warn("export fallback failed",e); }
+      }
+      return["__new__:"+html];
     }
 
     const isDocx = activeDoc.format==="docx";
@@ -2513,57 +2794,177 @@ export default function DocumentsPage() {
   };
 
   /* ── Print: only the document pages, no app chrome ── */
-  const handlePrintDoc=async()=>{
-    const pages=await bakePages();
-    if(!pages.length){alert("Document not ready. Scroll through all pages first.");return;}
-    const isHtml=pages[0].startsWith("__html__:");
-    const frame=document.createElement("iframe");
-    frame.style.cssText="position:fixed;top:-9999px;left:-9999px;width:816px;height:1056px;border:none;visibility:hidden;";
-    document.body.appendChild(frame);
-    const fdoc=frame.contentDocument||frame.contentWindow?.document;
-    if(!fdoc){window.print();return;}
-    const bodyHtml=isHtml
-      ?`<div style="padding:48px 96px;font-family:'Times New Roman',serif;font-size:12pt;line-height:1.6;color:#000;">${pages[0].slice(9)}</div>`
-      :pages.map((src,i)=>`<div style="page-break-after:${i<pages.length-1?"always":"avoid"};margin:0;line-height:0;"><img src="${src}" style="width:100%;display:block;"/></div>`).join("");
-    fdoc.open();
-    fdoc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
-      <style>*{margin:0;padding:0}body{background:#fff}
-      @media print{@page{margin:0;size:A4 portrait}body{margin:0}}</style>
-      </head><body>${bodyHtml}</body></html>`);
-    fdoc.close();
-    frame.contentWindow?.focus();
-    setTimeout(()=>{
-      frame.contentWindow?.print();
-      setTimeout(()=>{ try{document.body.removeChild(frame);}catch(e){} },2000);
-    },500);
-    // Only the FINAL RECIPIENT's copy disappears after print.
-    // Owners/initiators have no myRoute, so this never fires for them —
-    // their original document always stays in their list.
-    if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
-      setTimeout(()=>{
-        setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
-        setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
-      },1500);
+  // PRINT → open the print dialog (pick printer / Save as PDF).
+  const handlePrintDoc=async()=>{ await renderDocForPrint(); }
+
+  // DOWNLOAD → save the document in its OWN format:
+  //   • PDF  → downloads the actual .pdf file
+  //   • DOCX → downloads the actual .docx file
+  //   • new (editor) → generated as a .pdf (it has no original file)
+  const handleDownloadDoc=async()=>{
+    if(!activeDoc) return;
+    const safeTitle=(docTitle||"document").replace(/[<>"&/\\]/g,"_");
+    // Does this document have overlays (signatures/text/stamps) placed on it?
+    const hasOverlays =
+      (activeDoc.format==="pdf"  && pdfOverlays.length>0) ||
+      (activeDoc.format==="docx" && docxOverlays.length>0);
+    try{
+      // CLEAN PDF / DOCX (no overlays): download the real original file as-is.
+      if((activeDoc.format==="pdf" || activeDoc.format==="docx") && !hasOverlays){
+        const stored=(activeDoc as any).fileUrl;
+        const url=await resolveDocUrl(stored);
+        if(!url){ alert("Could not find the stored file for this document."); return; }
+        const resp=await fetch(url);
+        if(!resp.ok) throw new Error(`server returned ${resp.status}`);
+        const blob=await resp.blob();
+        const ext=activeDoc.format; // "pdf" or "docx"
+        const objUrl=URL.createObjectURL(blob);
+        const a=document.createElement("a");
+        a.href=objUrl; a.download=`${safeTitle}.${ext}`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(objUrl);
+      }
+      // PDF / DOCX WITH overlays: bake everything into a flattened PDF (the
+      // finished/signed document). Overlays can't be injected into a .docx, so
+      // the signed version is a PDF regardless of the original format.
+      else if(activeDoc.format==="pdf" || activeDoc.format==="docx"){
+        const jspdf=await loadJsPdf();
+        const { jsPDF }=jspdf;
+        const pages=await bakePages(); // baked page IMAGES, overlays included
+        if(!pages.length){ alert("Document not ready. Scroll through all pages first."); return; }
+        const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
+        const pageW=pdf.internal.pageSize.getWidth();
+        const pageH=pdf.internal.pageSize.getHeight();
+        for(let i=0;i<pages.length;i++){
+          const img=new Image();
+          await new Promise<void>(res=>{ img.onload=()=>res(); img.onerror=()=>res(); img.src=pages[i]; });
+          const ar=(img.naturalHeight||1056)/(img.naturalWidth||816);
+          if(i>0) pdf.addPage();
+          const drawH=pageW*ar;
+          if(drawH>pageH){ const h=pageH,w=h/ar; pdf.addImage(pages[i],"JPEG",(pageW-w)/2,0,w,h); }
+          else pdf.addImage(pages[i],"JPEG",0,0,pageW,drawH);
+        }
+        pdf.save(`${safeTitle}.pdf`);
+      }
+      else{
+        // Editable "new" document → let the user pick PDF or DOCX.
+        setShowDownloadFmt(true);
+        return;
+      }
+
+      // Final recipient's copy disappears after they download the completed doc.
+      if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
+        setTimeout(()=>{
+          setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
+          setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
+        },1000);
+      }
+    }catch(e:any){
+      alert("Could not download the document: "+(e?.message||"unknown error"));
     }
   }
-  const handleDownloadDoc=async()=>{
+
+  // Export an editable ("new") document in the chosen format (PDF or DOCX).
+  const exportEditableDoc=async(fmt:"pdf"|"docx")=>{
+    if(!activeDoc) return;
+    const safeTitle=(docTitle||"document").replace(/[<>"&/\\]/g,"_");
+    setShowDownloadFmt(false);
+    try{
+      const pages=await bakePages();
+      const html=(pages[0]||"").startsWith("__new__:")?pages[0].slice(8):"";
+      const overlaysHtml=newDocOverlays.map(ov=>`<img src="${ov.content}" crossorigin="anonymous" style="position:absolute;left:${ov.x}%;top:${ov.y}%;width:${(ov.fontSize||20)*10}px;max-width:70%;object-fit:contain;"/>`).join("");
+
+      if(fmt==="docx"){
+        // HTML → Word. (Absolutely-positioned overlay images don't translate to
+        // Word's flow layout, so for DOCX the signature is appended at the end.)
+        const htmlDocx=await loadHtmlDocx();
+        if(!htmlDocx?.asBlob){ alert("Word export library couldn't load. Try PDF instead."); return; }
+        const sigBlock = newDocOverlays.length
+          ? `<hr/><p><strong>Signatures / attachments:</strong></p>${newDocOverlays.map(ov=>`<img src="${ov.content}" style="max-width:240px"/>`).join("<br/>")}`
+          : "";
+        const fullHtml=`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:'Times New Roman',serif;font-size:12pt;line-height:1.6;">${html}${sigBlock}</body></html>`;
+        const blob=htmlDocx.asBlob(fullHtml);
+        const objUrl=URL.createObjectURL(blob);
+        const a=document.createElement("a");
+        a.href=objUrl; a.download=`${safeTitle}.docx`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(objUrl);
+      }else{
+        // PDF via jsPDF.html. Holder is ON-SCREEN but invisible (opacity:0) —
+        // a holder at left:-99999px isn't laid out by some browsers, which made
+        // html2canvas capture blank pages.
+        const jspdf=await loadJsPdf();
+        const { jsPDF }=jspdf;
+        const holder=document.createElement("div");
+        holder.style.cssText="position:fixed;left:0;top:0;width:794px;background:#fff;z-index:-1;opacity:0;pointer-events:none;padding:72px 64px;font-family:'Times New Roman',Georgia,serif;font-size:12pt;line-height:1.6;color:#000;box-sizing:border-box;";
+        holder.innerHTML=`<div style="position:relative">${html}${overlaysHtml}</div>`;
+        document.body.appendChild(holder);
+        // Let the browser lay it out and load the signature/overlay images.
+        await new Promise(r=>requestAnimationFrame(()=>r(null)));
+        const imgs=holder.querySelectorAll("img");
+        await Promise.all(Array.from(imgs).map(img=>(img as HTMLImageElement).complete?Promise.resolve():new Promise(res=>{img.addEventListener("load",()=>res(null));img.addEventListener("error",()=>res(null));})));
+        await new Promise(r=>setTimeout(r,150));
+        const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
+        try{
+          await pdf.html(holder,{ autoPaging:"text", margin:[40,40,40,40], html2canvas:{ scale:0.72, useCORS:true, backgroundColor:"#ffffff" }, width:515, windowWidth:794 });
+        }finally{ document.body.removeChild(holder); }
+        pdf.save(`${safeTitle}.pdf`);
+      }
+
+      if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
+        setTimeout(()=>{
+          setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
+          setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
+        },1000);
+      }
+    }catch(e:any){
+      alert("Could not export the document: "+(e?.message||"unknown error"));
+    }
+  }
+
+  const renderDocForPrint=async()=>{
     const pages=await bakePages();
     if(!pages.length){alert("Document not ready. Scroll through all pages first.");return;}
 
     const isNew=pages[0]?.startsWith("__new__:");
     const safeTitle=(docTitle||"document").replace(/[<>"&/\\]/g,"_");
 
+    // Build overlay HTML (signatures/images) for new docs, positioned by %.
+    const overlaysHtml = isNew
+      ? newDocOverlays.map(ov=>`<img src="${ov.content}" crossorigin="anonymous" style="position:absolute;left:${ov.x}%;top:${ov.y}%;width:${(ov.fontSize||20)*10}px;max-width:70%;object-fit:contain;"/>`).join("")
+      : "";
+
     const bodyHtml = isNew
-      ? `<div style="padding:48px 96px;font-family:'Times New Roman',serif;font-size:12pt;line-height:1.6;color:#000;">${pages[0].slice(8)}</div>`
+      ? `<div class="nd-sheet" style="position:relative;font-family:'Times New Roman',serif;font-size:12pt;line-height:1.6;color:#000;min-height:1000px;padding:72px 64px;">
+           <div class="nd-content">${pages[0].slice(8)}</div>
+           ${overlaysHtml}
+         </div>`
       : pages.map((src,i)=>`<div style="page-break-after:${i<pages.length-1?"always":"avoid"};margin:0;line-height:0;"><img src="${src}" style="width:100%;display:block;"/></div>`).join("");
 
     // Open in a new tab — user clicks Ctrl+P → Save as PDF
     // This is the most reliable cross-browser way to get a real PDF without a paid library
     const html=`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>${safeTitle}</title>
       <style>
-        *{margin:0;padding:0;box-sizing:border-box}
+        *{box-sizing:border-box}
         body{background:#fff;font-family:'Times New Roman',serif}
-        @media print{@page{margin:0;size:A4 portrait}body{margin:0}}
+        /* Content element styling so the document lays out correctly (without
+           this the editor HTML crushes into one line in print). */
+        .nd-content p{margin:0 0 10px;min-height:1.2em}
+        .nd-content h1{font-size:22pt;font-weight:700;margin:16px 0 10px}
+        .nd-content h2{font-size:18pt;font-weight:700;margin:14px 0 8px}
+        .nd-content h3{font-size:14pt;font-weight:700;margin:12px 0 6px}
+        .nd-content ul,.nd-content ol{margin:0 0 10px;padding-left:28px}
+        .nd-content li{margin:0 0 4px}
+        .nd-content strong{font-weight:700}
+        .nd-content em{font-style:italic}
+        .nd-content u{text-decoration:underline}
+        .nd-content table{border-collapse:collapse;width:100%;margin:0 0 10px}
+        .nd-content td,.nd-content th{border:1px solid #999;padding:4px 8px}
+        /* @page margin stays 0 (the print dialog's "Default" can override it).
+           For new docs the inset is padding on .nd-sheet instead, so it holds
+           regardless of the dialog's margin setting. */
+        @media print{@page{margin:0;size:A4 portrait}body{margin:0}.nd-sheet{padding:72px 64px !important;background:#fff}}
+        .nd-sheet{padding:72px 64px;background:#fff}
         @media screen{
           body{max-width:816px;margin:20px auto;background:#e8e6e1;padding:20px}
           .page-wrap{background:#fff;margin-bottom:20px;box-shadow:0 2px 12px rgba(0,0,0,.15)}
@@ -2571,30 +2972,46 @@ export default function DocumentsPage() {
       </style>
       </head><body>
       <div class="page-wrap">${bodyHtml}</div>
-      <script>
-        var _printed = false;
-        window.onload = function(){
-          document.title = "${safeTitle}";
-          if (!_printed) {
-            _printed = true;
-            setTimeout(function(){ window.print(); }, 400);
-          }
-        };
-        window.onafterprint = function(){ _printed = true; };
-      <\/script>
       </body></html>`;
 
-    const blob=new Blob([html],{type:"text/html;charset=utf-8"});
-    const url=URL.createObjectURL(blob);
-    const win=window.open(url,"_blank");
-    if(!win){
-      // Fallback if popup blocked: download as html
-      const a=document.createElement("a");
-      a.href=url; a.download=safeTitle+".html";
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
+    // Print via a hidden IFRAME rather than window.open(). Popup blockers and
+    // antivirus web-protection (e.g. Kaspersky) frequently block new-tab blob
+    // URLs, which caused the app page itself to print instead of this document.
+    // An iframe isn't a popup, so it prints reliably — and only ITS content.
+    const existing=document.getElementById("nd-print-frame");
+    if(existing) existing.remove();
+    const iframe=document.createElement("iframe");
+    iframe.id="nd-print-frame";
+    iframe.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+    document.body.appendChild(iframe);
+    const idoc=iframe.contentWindow?.document;
+    if(idoc){
+      idoc.open();
+      idoc.write(html);
+      idoc.close();
+      // Wait for images (signature/overlays) to load, then print the iframe.
+      const doPrint=()=>{
+        try{ iframe.contentWindow?.focus(); iframe.contentWindow?.print(); }
+        catch(e){ console.error("print failed",e); }
+      };
+      const imgs=idoc.images;
+      if(imgs && imgs.length){
+        let loaded=0; const total=imgs.length;
+        const check=()=>{ if(++loaded>=total) setTimeout(doPrint,150); };
+        Array.from(imgs).forEach(img=>{
+          if((img as HTMLImageElement).complete) check();
+          else { img.addEventListener("load",check); img.addEventListener("error",check); }
+        });
+        // Safety: print anyway after 3s even if an image never resolves.
+        setTimeout(doPrint,3000);
+      }else{
+        setTimeout(doPrint,300);
+      }
     }
-    setTimeout(()=>URL.revokeObjectURL(url),30000);
+    // Clean up the iframe after printing is done.
+    const cleanup=()=>{ const f=document.getElementById("nd-print-frame"); if(f) setTimeout(()=>f.remove(),1000); };
+    iframe.contentWindow?.addEventListener?.("afterprint",cleanup);
+    setTimeout(cleanup,60000);
     // Only the FINAL RECIPIENT's copy disappears after download.
     // Owners/initiators have no myRoute, so this never fires for them —
     // their original document always stays in their list.
@@ -2716,10 +3133,15 @@ export default function DocumentsPage() {
     if(!prof?.signature_url){alert("No signature uploaded yet. Please upload your signature in Settings.");return;}
     const sigUrl=await resolveStorageUrl(prof.signature_url);
     if(!sigUrl){alert("Could not load signature. Please check your Settings.");return;}
-    if(insertSigRef.current){
-      // New doc TipTap editor
-      insertSigRef.current(sigUrl);
-    }else if(activeDoc?.format==="docx"){
+    if(activeDoc?.format==="new"){
+      // Editable docs are reflowing text — a free-positioned signature overlay
+      // can't stay in the same spot once the content reflows for print/export.
+      // Guide the user to sign the FIXED version instead, where it works perfectly.
+      setContextPos(null);
+      setShowSignGuide(true);
+      return;
+    }
+    if(activeDoc?.format==="docx"){
       // DOCX iframe
       document.querySelectorAll<HTMLIFrameElement>(".dp-docx-iframe").forEach(iframe=>{
         const doc=iframe.contentDocument;
@@ -2752,7 +3174,8 @@ export default function DocumentsPage() {
     const path = `docs/img_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const { error: upErr } = await supabase.storage.from("documents").upload(path, file, { contentType: file.type, upsert: false });
     if (upErr) { alert("Image upload failed: " + upErr.message); return; }
-    const imgUrl = supabase.storage.from("documents").getPublicUrl(path).data.publicUrl;
+    const { data: signed } = await supabase.storage.from("documents").createSignedUrl(path, 3600);
+    const imgUrl = signed?.signedUrl || "";
 
     const newId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const overlay: PdfOverlay = { id:newId, pageIdx:0, x:10, y:10, type:"image", content:imgUrl, fontSize:20, step:myRoute?.route_order??0 };
@@ -2946,6 +3369,12 @@ export default function DocumentsPage() {
                 // removed after download/print — it's their original and stays.
                 !(activeDoc as any).isShared && (
                   <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+                    {(activeDoc.format==="pdf"||activeDoc.format==="docx") && (
+                      <button className="dp-btn dp-btn-ghost" onClick={()=>setShowConvert(true)} title="Convert to another format" disabled={converting}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                        {converting?"Converting…":"Convert"}
+                      </button>
+                    )}
                     <button className="dp-btn dp-btn-ghost" onClick={openRoutingModal}><Ico.Route/> Route</button>
                     <div style={{width:1,height:20,background:"var(--border)",flexShrink:0,margin:"0 2px"}}/>
                     <button className="dp-btn dp-btn-ghost" onClick={handleDownloadDoc} title="Download as PDF">
@@ -3487,14 +3916,12 @@ export default function DocumentsPage() {
                             document.addEventListener("mousemove",onMove);
                             document.addEventListener("mouseup",onUp);
                           }}>
-                          {/* Resize controls — hidden for org read-only view */}
-                          {!(activeDoc as any).isOrgDoc && <div style={{position:"absolute",top:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:12,opacity:0}}
-                            className="nd-img-ctrl"
-                            onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.opacity="1";}}
-                            onMouseLeave={e=>{(e.currentTarget as HTMLElement).style.opacity="0";}}>
+                          {/* Resize controls — always visible so they're easy to use */}
+                          {!(activeDoc as any).isOrgDoc && <div style={{position:"absolute",top:-24,left:0,display:"flex",alignItems:"center",gap:4,background:"rgba(0,0,0,0.8)",borderRadius:4,padding:"3px 7px",zIndex:12,opacity:1}}
+                            className="nd-img-ctrl">
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||20)+8)}:o));setSaveStatus("unsaved");}}
                               style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 2px"}}>+</button>
-                            <span style={{color:"#ccc",fontSize:10,fontFamily:"monospace",minWidth:28,textAlign:"center"}}>{ov.fontSize||20}0px</span>
+                            <span style={{color:"#ccc",fontSize:10,fontFamily:"monospace",minWidth:34,textAlign:"center"}}>{(ov.fontSize||20)*10}px</span>
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(4,(o.fontSize||20)-8)}:o));setSaveStatus("unsaved");}}
                               style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 2px"}}>−</button>
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}
@@ -3503,8 +3930,6 @@ export default function DocumentsPage() {
                           <img src={ov.content} alt="attachment" crossOrigin="anonymous"
                             style={{width:(ov.fontSize||20)*10,maxWidth:700,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:4,border:"2px solid rgba(124,58,237,0.3)"}}
                             onError={e=>{(e.target as HTMLImageElement).style.display="none";}}
-                            onMouseEnter={e=>{const ctrl=(e.currentTarget as HTMLElement).previousElementSibling as HTMLElement;if(ctrl)ctrl.style.opacity="1";}}
-                            onMouseLeave={e=>{const ctrl=(e.currentTarget as HTMLElement).previousElementSibling as HTMLElement;if(ctrl)ctrl.style.opacity="0";}}
                           />
                         </div>
                       ))}
@@ -3546,6 +3971,119 @@ export default function DocumentsPage() {
         )}
       </main>
 
+      {showSignGuide&&activeDoc&&(
+        <div className="dp-modal-backdrop" onClick={()=>setShowSignGuide(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:420,maxWidth:"94vw"}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:6,display:"flex",alignItems:"center",gap:8}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent,#7c3aed)" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              Finish editing, then sign
+            </div>
+            <div style={{fontSize:13,color:"var(--text)",lineHeight:1.6,marginBottom:16}}>
+              This is an <strong>editable document</strong>, so its text can still move around. A signature placed here wouldn't stay in the exact spot once the layout is finalised.
+              <br/><br/>
+              To sign it properly: finish your edits, then <strong>download or convert it to PDF</strong>. Open that PDF here and place your signature — on a PDF it locks exactly where you put it.
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setShowSignGuide(false)}>Keep editing</button>
+              <button className="dp-btn dp-btn-primary" onClick={()=>{setShowSignGuide(false);setShowDownloadFmt(true);}}>
+                Download to sign
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDownloadFmt&&activeDoc&&(
+        <div className="dp-modal-backdrop" onClick={()=>setShowDownloadFmt(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:380,maxWidth:"94vw"}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Download as</div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:18}}>Choose the format for "{activeDoc.title}".</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <button className="dp-btn dp-btn-primary" style={{justifyContent:"flex-start",padding:"12px 16px"}}
+                onClick={()=>exportEditableDoc("pdf")}>📄 PDF document</button>
+              <button className="dp-btn dp-btn-ghost" style={{justifyContent:"flex-start",padding:"12px 16px"}}
+                onClick={()=>exportEditableDoc("docx")}>📝 Word document (DOCX)</button>
+            </div>
+            {newDocOverlays.length>0&&(
+              <div style={{fontSize:10.5,color:"var(--amber,#b45309)",marginTop:12,lineHeight:1.5}}>
+                Note: this document has signatures/images. In PDF they stay where you placed them; in Word they're added at the end (Word can't hold free-floating overlays).
+              </div>
+            )}
+            <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setShowDownloadFmt(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConvert&&activeDoc&&(
+        <div className="dp-modal-backdrop" onClick={()=>!converting&&setShowConvert(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:420,maxWidth:"94vw"}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Convert document</div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:18}}>
+              Creates a copy in the new format. Your original "{activeDoc.title}" stays unchanged.
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {/* Offer the OTHER format from the current one. */}
+              {activeDoc.format==="docx" && (
+                <button className="dp-btn dp-btn-primary" disabled={converting}
+                  onClick={()=>convertDocument("pdf")} style={{justifyContent:"flex-start",padding:"12px 16px"}}>
+                  📄 Convert to PDF {converting?"…":""}
+                </button>
+              )}
+              {activeDoc.format==="pdf" && (<>
+                <button className="dp-btn dp-btn-primary" disabled={converting}
+                  onClick={()=>convertDocument("docx",{asEditable:true})} style={{justifyContent:"flex-start",padding:"12px 16px"}}>
+                  ✏️ Convert to editable document {converting?"…":""}
+                </button>
+                <button className="dp-btn dp-btn-ghost" disabled={converting}
+                  onClick={()=>convertDocument("docx")} style={{justifyContent:"flex-start",padding:"12px 16px"}}>
+                  📝 Convert to Word file (overlay only)
+                </button>
+              </>)}
+              {/* Coming-soon formats (XLSX/PPT feature not built yet). */}
+              <button className="dp-btn dp-btn-ghost" disabled style={{justifyContent:"flex-start",padding:"12px 16px",opacity:.55}}>
+                📊 Excel / 📑 PowerPoint — coming soon
+              </button>
+            </div>
+            {activeDoc.format==="pdf" && (
+              <div style={{fontSize:11.5,color:"var(--text)",background:"var(--bg,#f5f3ef)",border:"1px solid var(--border)",padding:"11px 13px",borderRadius:8,marginTop:14,lineHeight:1.55}}>
+                <div style={{fontWeight:700,marginBottom:6,display:"flex",alignItems:"center",gap:6,color:"var(--amber,#b45309)"}}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  Before you choose
+                </div>
+                <div style={{marginBottom:6}}>
+                  <strong>✏️ Editable document</strong> — opens here for quick text edits (add/delete words). Best for simple, text-based documents. <span style={{color:"var(--muted)"}}>Complex layouts (columns, tables, designed pages) will reflow and may look different.</span>
+                </div>
+                <div style={{marginBottom:8}}>
+                  <strong>📝 Word file (overlay only)</strong> — keeps the exact appearance; you stamp text/signatures on top but can't edit the underlying text here.
+                </div>
+                <div style={{background:"var(--accent-light,#ede9fe)",color:"var(--accent,#6d28d9)",padding:"7px 10px",borderRadius:6,fontSize:11}}>
+                  💡 <strong>For heavy reformatting of a complex document</strong>, the "Word file" option is best — download it and edit in Microsoft Word, WPS, or Google Docs, which preserve full fidelity. Then re-upload if you need to route or sign it here.
+                </div>
+              </div>
+            )}
+            {/* Live progress / error feedback */}
+            {convMsg && (
+              <div style={{
+                marginTop:14,padding:"10px 12px",borderRadius:8,fontSize:12.5,lineHeight:1.5,
+                display:"flex",alignItems:"center",gap:9,
+                background: convMsg.type==="error" ? "var(--red-bg,#fee2e2)" : "var(--accent-light,#ede9fe)",
+                color: convMsg.type==="error" ? "var(--red,#991b1b)" : "var(--accent,#6d28d9)"
+              }}>
+                {convMsg.type==="info" && <div className="dp-spinner" style={{width:14,height:14,borderWidth:2,flexShrink:0}}/>}
+                <span>{convMsg.text}</span>
+              </div>
+            )}
+            <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>{setShowConvert(false);setConvMsg(null);}} disabled={converting}>
+                {convMsg?.type==="error" ? "Close" : "Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showRouteModal&&(
         <div className="dp-modal-backdrop" onClick={()=>setShowRouteModal(false)}>
           <div className="dp-modal" onClick={e=>e.stopPropagation()}>
@@ -3553,6 +4091,42 @@ export default function DocumentsPage() {
             <p className="dp-modal-sub">
               Click users to add them in approval order. The <strong>last person</strong> selected is the final approver and can print or save the document.
             </p>
+
+            {/* Convert before sending — only for PDF/DOCX uploads that can convert */}
+            {(activeDoc?.format==="pdf"||activeDoc?.format==="docx")&&(
+              <div style={{background:"var(--bg)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+                <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:500}}>
+                  <input type="checkbox" checked={convBeforeSend} onChange={e=>setConvBeforeSend(e.target.checked)}/>
+                  Convert to another format before sending
+                </label>
+                {convBeforeSend&&(
+                  <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{fontSize:11.5,color:"var(--muted)",lineHeight:1.5}}>
+                      This creates a converted copy and opens it for you to review. You then route the copy. Your original stays unchanged.
+                    </div>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      {activeDoc.format==="docx"&&(
+                        <button className="dp-btn dp-btn-primary" disabled={converting}
+                          onClick={async()=>{ const id=await convertDocument("pdf"); if(id){ setShowRouteModal(false); setConvBeforeSend(false); } }}>
+                          {converting?"Converting…":"Convert to PDF & review"}
+                        </button>
+                      )}
+                      {activeDoc.format==="pdf"&&(
+                        <button className="dp-btn dp-btn-primary" disabled={converting}
+                          onClick={async()=>{ const id=await convertDocument("docx"); if(id){ setShowRouteModal(false); setConvBeforeSend(false); } }}>
+                          {converting?"Converting…":"Convert to Word & review"}
+                        </button>
+                      )}
+                    </div>
+                    {activeDoc.format==="pdf"&&(
+                      <div style={{fontSize:10.5,color:"var(--amber,#b45309)",lineHeight:1.5}}>
+                        Note: PDF → Word keeps text and layout as closely as possible; complex formatting may shift.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Selected route — ordered steps */}
             {selectedRoute.length>0&&(
