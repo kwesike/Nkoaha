@@ -327,14 +327,24 @@ async function renderPdfPage(pdfDoc: any, pageNum: number, canvas: HTMLCanvasEle
   try {
     const page = await pdfDoc.getPage(pageNum);
     const dpr   = Math.min(window.devicePixelRatio || 2, 3);
-    const pageW = 816;
     const baseVp = page.getViewport({ scale: 1 });
+    // Orientation-aware width: a landscape page (wider than tall — typical of
+    // PowerPoint slides and wide/landscape spreadsheets) is laid out at a wider
+    // display width so it reads horizontally. Portrait pages (Word docs, normal
+    // PDFs) keep the standard letter width and stay vertical.
+    const landscape = baseVp.width > baseVp.height * 1.05;
+    const pageW = landscape ? 1120 : 816;
     const scale  = (pageW / baseVp.width) * dpr;
     const vp     = page.getViewport({ scale });
     canvas.width  = Math.floor(vp.width);   // resetting width also clears the canvas
     canvas.height = Math.floor(vp.height);
     canvas.style.width  = pageW + "px";
     canvas.style.height = Math.floor(vp.height / dpr) + "px";
+    // Size the enclosing page card to match this page's width so a landscape
+    // page isn't clipped to the portrait 816px card (max-width:100% keeps it
+    // responsive on small screens). Done per-page so mixed decks still work.
+    const card = canvas.closest(".dp-page-card") as HTMLElement | null;
+    if (card) card.style.width = pageW + "px";
     const ctx = canvas.getContext("2d")!;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
@@ -2158,6 +2168,62 @@ export default function DocumentsPage() {
       // Keep the modal open and show the error inline so the user sees context.
       setConvMsg({type:"error",text:(e?.message || "Conversion failed. Please try again.")});
       return null;
+    }
+  }
+
+  // ── Convert the active PDF to a downloadable Excel / PowerPoint file ──
+  // Uses ConvertAPI (convert-pdf-to-word with a `to` target). These formats
+  // can't be previewed in-app (we only render PDFs), so the result is delivered
+  // as a download to open in Excel / PowerPoint / WPS. Best results come from
+  // PDFs that originated as a spreadsheet (xlsx) or deck (pptx).
+  async function downloadPdfAsOffice(target:"xlsx"|"pptx"){
+    const { data:{ user } } = await supabase.auth.getUser();
+    if(!user || !activeDoc) return;
+    if(activeDoc.format!=="pdf"){
+      setConvMsg({type:"error",text:"Excel/PowerPoint conversion works from a PDF. Convert this to PDF first, then convert the PDF."});
+      return;
+    }
+    setConverting(true);
+    setConvMsg({type:"info",text:`Converting to ${target==="xlsx"?"Excel":"PowerPoint"}… this can take a few seconds.`});
+    try{
+      const srcUrl = await resolveDocUrl((activeDoc as any).fileUrl);
+      if(!srcUrl) throw new Error("Couldn't read the source document.");
+      const srcResp = await fetch(srcUrl);
+      if(!srcResp.ok) throw new Error("Couldn't download the source document.");
+      const srcBlob = await srcResp.blob();
+
+      const fd = new FormData();
+      fd.append("file", srcBlob, "document.pdf");
+      fd.append("to", target);
+      const { data:{ session } } = await supabase.auth.getSession();
+      const supaUrl = (supabase as any).supabaseUrl || import.meta.env.VITE_SUPABASE_URL;
+      const resp = await fetch(`${supaUrl}/functions/v1/convert-pdf-to-word`, {
+        method:"POST",
+        headers:{ Authorization:`Bearer ${session?.access_token||""}` },
+        body: fd,
+      });
+      const ctype = resp.headers.get("content-type")||"";
+      if(!resp.ok || ctype.includes("application/json")){
+        let msg = `Conversion failed (${resp.status}).`;
+        try{ const j=await resp.json(); if(j?.error) msg = j.error + (j.detail?" — "+j.detail:""); }catch(_){}
+        throw new Error(msg);
+      }
+      const outBlob = await resp.blob();
+      if(outBlob.size < 100) throw new Error("Conversion produced an empty file.");
+
+      const safeTitle=(activeDoc.title||"document").replace(/\.(pdf|docx|xlsx|pptx)$/i,"").replace(/[^a-zA-Z0-9._-]/g,"_");
+      const objUrl=URL.createObjectURL(outBlob);
+      const a=document.createElement("a");
+      a.href=objUrl; a.download=`${safeTitle}.${target}`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(()=>URL.revokeObjectURL(objUrl),4000);
+
+      setConverting(false);
+      setConvMsg({type:"info",text:`Downloaded ${target==="xlsx"?"Excel":"PowerPoint"} file. Open it in Excel, PowerPoint or WPS.`});
+      await logActivity("document_converted",activeDoc.id,activeDoc.title,user.id);
+    }catch(e:any){
+      setConverting(false);
+      setConvMsg({type:"error",text:(e?.message || "Conversion failed. Please try again.")});
     }
   }
 
@@ -4402,11 +4468,22 @@ export default function DocumentsPage() {
                   onClick={()=>convertDocument("docx")} style={{justifyContent:"flex-start",padding:"12px 16px"}}>
                   📝 Convert to Word file (overlay only)
                 </button>
+                <button className="dp-btn dp-btn-ghost" disabled={converting}
+                  onClick={()=>downloadPdfAsOffice("xlsx")} style={{justifyContent:"flex-start",padding:"12px 16px"}}>
+                  📊 Convert to Excel (.xlsx) — downloads {converting?"…":""}
+                </button>
+                <button className="dp-btn dp-btn-ghost" disabled={converting}
+                  onClick={()=>downloadPdfAsOffice("pptx")} style={{justifyContent:"flex-start",padding:"12px 16px"}}>
+                  📑 Convert to PowerPoint (.pptx) — downloads {converting?"…":""}
+                </button>
               </>)}
-              {/* Coming-soon formats (XLSX/PPT feature not built yet). */}
-              <button className="dp-btn dp-btn-ghost" disabled style={{justifyContent:"flex-start",padding:"12px 16px",opacity:.55}}>
-                📊 Excel / 📑 PowerPoint — coming soon
-              </button>
+              {/* Excel / PowerPoint conversion runs from a PDF. For a DOCX,
+                  convert to PDF first, then convert the PDF to Excel/PPT. */}
+              {activeDoc.format==="docx" && (
+                <div style={{fontSize:11.5,color:"var(--muted)",padding:"2px 2px",lineHeight:1.5}}>
+                  📊 Excel / 📑 PowerPoint: convert to PDF first (above), then open the PDF and convert it to Excel or PowerPoint.
+                </div>
+              )}
             </div>
             {activeDoc.format==="pdf" && (
               <div style={{fontSize:11.5,color:"var(--text)",background:"var(--bg,#f5f3ef)",border:"1px solid var(--border)",padding:"11px 13px",borderRadius:8,marginTop:14,lineHeight:1.55}}>
