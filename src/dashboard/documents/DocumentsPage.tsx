@@ -250,6 +250,13 @@ async function loadHtmlDocx(): Promise<any> {
   return (window as any).htmlDocx;
 }
 
+// pdf-lib: merge PDFs page-by-page in the browser (for adding pages to a doc).
+async function loadPdfLib(): Promise<any> {
+  if ((window as any).PDFLib) return (window as any).PDFLib;
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js");
+  return (window as any).PDFLib;
+}
+
 async function loadPdfJs(): Promise<any> {
   if ((window as any).pdfjsLib) return (window as any).pdfjsLib;
   return new Promise((resolve, reject) => {
@@ -303,22 +310,44 @@ async function resolveDocUrl(stored: string): Promise<string> {
 }
 
 async function renderPdfPage(pdfDoc: any, pageNum: number, canvas: HTMLCanvasElement) {
-  const page = await pdfDoc.getPage(pageNum);
-  // Use at least 2x for crisp rendering — clamp to 3x max to avoid memory issues
-  const dpr   = Math.min(window.devicePixelRatio || 2, 3);
-  const pageW = 816;
-  const baseVp = page.getViewport({ scale: 1 });
-  const scale  = (pageW / baseVp.width) * dpr;
-  const vp     = page.getViewport({ scale });
-  canvas.width  = Math.floor(vp.width);
-  canvas.height = Math.floor(vp.height);
-  canvas.style.width  = pageW + "px";
-  canvas.style.height = Math.floor(vp.height / dpr) + "px";
-  // Force crisp rendering
-  const ctx = canvas.getContext("2d")!;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  // Guard against CONCURRENT renders on the same canvas — the cause of the
+  // "Cannot use same canvas during multiple render()" error and the upside-down
+  // / corrupted page when returning to a backgrounded tab (a new render starts
+  // before the old one finishes). We cancel any in-flight render first.
+  const cv = canvas as any;
+  if (cv.__renderTask) {
+    try { cv.__renderTask.cancel(); } catch {}
+    cv.__renderTask = null;
+  }
+  // If a render is still settling, wait briefly for the cancel to take effect.
+  if (cv.__rendering) {
+    await new Promise(r => setTimeout(r, 30));
+  }
+  cv.__rendering = true;
+  try {
+    const page = await pdfDoc.getPage(pageNum);
+    const dpr   = Math.min(window.devicePixelRatio || 2, 3);
+    const pageW = 816;
+    const baseVp = page.getViewport({ scale: 1 });
+    const scale  = (pageW / baseVp.width) * dpr;
+    const vp     = page.getViewport({ scale });
+    canvas.width  = Math.floor(vp.width);   // resetting width also clears the canvas
+    canvas.height = Math.floor(vp.height);
+    canvas.style.width  = pageW + "px";
+    canvas.style.height = Math.floor(vp.height / dpr) + "px";
+    const ctx = canvas.getContext("2d")!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    const task = page.render({ canvasContext: ctx, viewport: vp });
+    cv.__renderTask = task;
+    await task.promise;
+    cv.__renderTask = null;
+  } catch (e: any) {
+    // A cancelled render throws — that's expected, not an error to surface.
+    if (e?.name !== "RenderingCancelledException") throw e;
+  } finally {
+    cv.__rendering = false;
+  }
 }
 
 async function docxToHtml(arrayBuffer: ArrayBuffer): Promise<string> {
@@ -1732,6 +1761,208 @@ export default function DocumentsPage() {
   // Returns the new document id, or null on failure/limit.
   const [showConvert, setShowConvert] = useState(false);
   const [showDownloadFmt, setShowDownloadFmt] = useState(false); // editable-doc format picker
+  const [merging, setMerging] = useState(false);
+  const [pendingMergeFile, setPendingMergeFile] = useState<File|null>(null); // file awaiting replace/new choice
+  const mergeInputRef = useRef<HTMLInputElement|null>(null);
+  // Page manager: reorder / delete pages.
+  const [showPageMgr, setShowPageMgr] = useState(false);
+  const [pmPages, setPmPages] = useState<{origIndex:number; thumb:string}[]>([]); // ordered list of pages
+  const [pmLoading, setPmLoading] = useState(false);
+  const [pmApplying, setPmApplying] = useState(false);
+  const pmBytesRef = useRef<Uint8Array|null>(null); // the source PDF bytes
+
+  // Open the page manager: get the doc's PDF, render thumbnails for each page.
+  async function openPageManager(){
+    if(!activeDoc) return;
+    setShowPageMgr(true); setPmLoading(true); setPmPages([]);
+    try{
+      const bytes=await activeDocPdfBytes();
+      if(!bytes){ alert("Couldn't read this document's pages."); setShowPageMgr(false); setPmLoading(false); return; }
+      pmBytesRef.current=bytes;
+      const pdfjs=await loadPdfJs();
+      const doc=await pdfjs.getDocument({data:bytes.slice()}).promise;
+      const pages:{origIndex:number; thumb:string}[]=[];
+      for(let i=1;i<=doc.numPages;i++){
+        const page=await doc.getPage(i);
+        const vp=page.getViewport({scale:0.3});
+        const canvas=document.createElement("canvas");
+        canvas.width=Math.floor(vp.width); canvas.height=Math.floor(vp.height);
+        const ctx=canvas.getContext("2d")!;
+        await page.render({canvasContext:ctx, viewport:vp}).promise;
+        pages.push({ origIndex:i-1, thumb:canvas.toDataURL("image/jpeg",0.6) });
+      }
+      setPmPages(pages);
+    }catch(e:any){
+      alert("Could not load pages: "+(e?.message||"unknown"));
+      setShowPageMgr(false);
+    }finally{ setPmLoading(false); }
+  }
+
+  function pmMove(from:number, dir:-1|1){
+    setPmPages(prev=>{
+      const to=from+dir;
+      if(to<0||to>=prev.length) return prev;
+      const next=[...prev];
+      [next[from],next[to]]=[next[to],next[from]];
+      return next;
+    });
+  }
+  function pmDelete(idx:number){
+    setPmPages(prev=>prev.length<=1?prev:prev.filter((_,i)=>i!==idx));
+  }
+
+  // Apply the new page order/deletions: rebuild the PDF with pdf-lib and save.
+  async function pmApply(mode:"replace"|"new"){
+    if(!activeDoc||!pmBytesRef.current) return;
+    setPmApplying(true);
+    try{
+      const PDFLib=await loadPdfLib();
+      const srcDoc=await PDFLib.PDFDocument.load(pmBytesRef.current);
+      const outDoc=await PDFLib.PDFDocument.create();
+      const order=pmPages.map(p=>p.origIndex);
+      const copied=await outDoc.copyPages(srcDoc, order);
+      copied.forEach((p:any)=>outDoc.addPage(p));
+      const outBytes=await outDoc.save();
+
+      const{data:{user}}=await supabase.auth.getUser(); if(!user){ setPmApplying(false); return; }
+      const blob=new Blob([outBytes],{type:"application/pdf"});
+
+      if(mode==="new"){
+        const newId=crypto.randomUUID();
+        const path=`docs/pages_${newId}.pdf`;
+        const{error:upErr}=await supabase.storage.from("documents").upload(path,blob,{contentType:"application/pdf",upsert:true});
+        if(upErr) throw new Error(upErr.message);
+        const title=(activeDoc.title||"Document").replace(/\.(pdf|docx)$/i,"")+" (Edited pages)";
+        const{data:nd,error:dErr}=await supabase.from("documents").insert({
+          id:newId, owner_id:user.id, sender_id:user.id, uploaded_by:user.id,
+          owner_type:(activeDoc as any).isOrgDoc?"organization":"individual",
+          organization_id:(activeDoc as any).organizationId??null,
+          document_kind:"upload", format:"pdf", title, file_url:path, status:"draft", pages:outDoc.getPageCount(),
+        }).select("id").single();
+        if(dErr||!nd) throw new Error(dErr?.message||"insert failed");
+        const item:DocumentItem={ id:nd.id, title, fileUrl:path, format:"pdf", pages:outDoc.getPageCount() };
+        setDocuments(prev=>[item,...prev]);
+        setShowPageMgr(false); setPmApplying(false);
+        openDocument(item);
+      }else{
+        const path=`docs/pages_${activeDoc.id}_${Date.now()}.pdf`;
+        const{error:upErr}=await supabase.storage.from("documents").upload(path,blob,{contentType:"application/pdf",upsert:true});
+        if(upErr) throw new Error(upErr.message);
+        await supabase.from("documents").update({ file_url:path, format:"pdf", pdf_url:path, pdf_ready:true, pages:outDoc.getPageCount() }).eq("id",activeDoc.id);
+        setShowPageMgr(false); setPmApplying(false);
+        openDocument({ id:activeDoc.id, title:activeDoc.title, fileUrl:path, format:"pdf", pages:outDoc.getPageCount() } as DocumentItem);
+      }
+    }catch(e:any){
+      setPmApplying(false);
+      alert("Could not apply page changes: "+(e?.message||"unknown"));
+    }
+  }
+
+  // Get a PDF Uint8Array for the ACTIVE document (convert DOCX→PDF if needed).
+  async function activeDocPdfBytes(): Promise<Uint8Array|null> {
+    if(!activeDoc) return null;
+    if(activeDoc.format==="pdf"){
+      const url=await resolveDocUrl((activeDoc as any).fileUrl);
+      if(!url) return null;
+      const r=await fetch(url); if(!r.ok) return null;
+      return new Uint8Array(await r.arrayBuffer());
+    }
+    if(activeDoc.format==="docx"){
+      // Use the already-converted pdf_url if present, else convert now.
+      const{data}=await supabase.from("documents").select("pdf_url,pdf_ready,file_url").eq("id",activeDoc.id).maybeSingle();
+      if(data?.pdf_ready&&data?.pdf_url){
+        const url=await resolveDocUrl(data.pdf_url);
+        if(url){ const r=await fetch(url); if(r.ok) return new Uint8Array(await r.arrayBuffer()); }
+      }
+      // Convert on demand.
+      let out:Uint8Array|null=null;
+      await convertDocxToPdfViaEdge(await resolveDocUrl(data?.file_url||(activeDoc as any).fileUrl), activeDoc.id, async(blob:Blob)=>{ out=new Uint8Array(await blob.arrayBuffer()); });
+      return out;
+    }
+    // Editable "new" doc → render to PDF via the email-bake path.
+    const b64=await bakePagesToPdfBase64();
+    if(!b64) return null;
+    const bin=atob(b64.split(",").pop()||b64);
+    const arr=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    return arr;
+  }
+
+  // Convert an uploaded file (PDF or DOCX) to PDF bytes for merging.
+  async function fileToPdfBytes(file:File): Promise<Uint8Array|null> {
+    if(/\.pdf$/i.test(file.name)){
+      return new Uint8Array(await file.arrayBuffer());
+    }
+    if(/\.docx$/i.test(file.name)){
+      // Convert DOCX→PDF via the edge function.
+      const fd=new FormData(); fd.append("file",file,file.name); fd.append("tool","officepdf");
+      const{data:{session}}=await supabase.auth.getSession();
+      const supaUrl=(supabase as any).supabaseUrl||import.meta.env.VITE_SUPABASE_URL;
+      const resp=await fetch(`${supaUrl}/functions/v1/convert-office-pdf`,{method:"POST",headers:{Authorization:`Bearer ${session?.access_token||""}`},body:fd});
+      if(!resp.ok) return null;
+      return new Uint8Array(await resp.arrayBuffer());
+    }
+    return null;
+  }
+
+  // Perform the merge: append uploaded file's pages to the active doc.
+  async function doMerge(file:File, mode:"replace"|"new"){
+    if(!activeDoc){ return; }
+    setPendingMergeFile(null);
+    setMerging(true);
+    try{
+      const PDFLib=await loadPdfLib();
+      const baseBytes=await activeDocPdfBytes();
+      if(!baseBytes){ alert("Couldn't read the current document for merging."); setMerging(false); return; }
+      const addBytes=await fileToPdfBytes(file);
+      if(!addBytes){ alert("Couldn't read the file to merge. Use a PDF or DOCX."); setMerging(false); return; }
+
+      // Merge: base pages first, then the uploaded file's pages appended.
+      const merged=await PDFLib.PDFDocument.create();
+      const baseDoc=await PDFLib.PDFDocument.load(baseBytes);
+      const addDoc =await PDFLib.PDFDocument.load(addBytes);
+      const basePages=await merged.copyPages(baseDoc, baseDoc.getPageIndices());
+      basePages.forEach((p:any)=>merged.addPage(p));
+      const addPages=await merged.copyPages(addDoc, addDoc.getPageIndices());
+      addPages.forEach((p:any)=>merged.addPage(p));
+      const mergedBytes=await merged.save();
+
+      const{data:{user}}=await supabase.auth.getUser(); if(!user){ setMerging(false); return; }
+
+      if(mode==="new"){
+        // Create a NEW combined document (original untouched).
+        const newId=crypto.randomUUID();
+        const path=`docs/merged_${newId}.pdf`;
+        const{error:upErr}=await supabase.storage.from("documents").upload(path,new Blob([mergedBytes],{type:"application/pdf"}),{contentType:"application/pdf",upsert:true});
+        if(upErr) throw new Error(upErr.message);
+        const{data:nd,error:dErr}=await supabase.from("documents").insert({
+          id:newId, owner_id:user.id, sender_id:user.id, uploaded_by:user.id,
+          owner_type:(activeDoc as any).isOrgDoc?"organization":"individual",
+          organization_id:(activeDoc as any).organizationId??null,
+          document_kind:"upload", format:"pdf",
+          title:(activeDoc.title||"Document").replace(/\.(pdf|docx)$/i,"")+" (Merged)",
+          file_url:path, status:"draft", pages:merged.getPageCount(),
+        }).select("id").single();
+        if(dErr||!nd) throw new Error(dErr?.message||"insert failed");
+        const item:DocumentItem={ id:nd.id, title:(activeDoc.title||"Document").replace(/\.(pdf|docx)$/i,"")+" (Merged)", fileUrl:path, format:"pdf", pages:merged.getPageCount() };
+        setDocuments(prev=>[item,...prev]);
+        setMerging(false);
+        openDocument(item); // open the combined doc
+      }else{
+        // REPLACE the current document's file with the merged PDF.
+        const path=`docs/merged_${activeDoc.id}_${Date.now()}.pdf`;
+        const{error:upErr}=await supabase.storage.from("documents").upload(path,new Blob([mergedBytes],{type:"application/pdf"}),{contentType:"application/pdf",upsert:true});
+        if(upErr) throw new Error(upErr.message);
+        // For a DOCX base, make it behave as a PDF now (merged output is PDF).
+        await supabase.from("documents").update({ file_url:path, format:"pdf", pdf_url:path, pdf_ready:true, pages:merged.getPageCount() }).eq("id",activeDoc.id);
+        setMerging(false);
+        openDocument({ id:activeDoc.id, title:activeDoc.title, fileUrl:path, format:"pdf", pages:merged.getPageCount() } as DocumentItem);
+      }
+    }catch(e:any){
+      setMerging(false);
+      alert("Merge failed: "+(e?.message||"unknown error"));
+    }
+  }
   const [showSignGuide, setShowSignGuide] = useState(false); // editable-doc signing guidance
   const [convBeforeSend, setConvBeforeSend] = useState(false); // route-modal checkbox
   const [convMsg, setConvMsg] = useState<{type:"info"|"error";text:string}|null>(null); // convert feedback
@@ -2457,10 +2688,14 @@ export default function DocumentsPage() {
       // Build an off-screen container styled like a document page so jsPDF.html
       // lays it out at the right width (A4 ≈ 794px CSS at 96dpi).
       const holder=document.createElement("div");
-      holder.style.cssText="position:fixed;left:-99999px;top:0;width:794px;background:#fff;"+
-        "padding:48px 64px;font-family:'Times New Roman',Georgia,serif;font-size:12pt;line-height:1.6;color:#000;box-sizing:border-box;";
+      // Opaque + below viewport so html2canvas can capture it (off-screen or
+      // opacity:0 holders capture blank).
+      holder.style.cssText="position:absolute;left:0;top:100000px;width:794px;background:#fff;"+
+        "padding:48px 64px;font-family:'Times New Roman',Georgia,serif;font-size:12pt;line-height:1.6;color:#000;box-sizing:border-box;z-index:2147483647;";
       holder.innerHTML=html;
       document.body.appendChild(holder);
+      await new Promise(r=>requestAnimationFrame(()=>r(null)));
+      await new Promise(r=>setTimeout(r,120));
       const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
       try{
         await pdf.html(holder,{
@@ -2510,11 +2745,14 @@ export default function DocumentsPage() {
   /* ── Send the active document directly to an email address ── */
   const sendDocumentToEmail=async()=>{
     setEmailMsg(null);
-    const to=emailTo.trim().toLowerCase();
-    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)){
-      setEmailMsg({type:"error",text:"Please enter a valid email address."});
-      return;
-    }
+    // Parse multiple addresses: split on comma, semicolon, whitespace, newlines.
+    const emails=[...new Set(
+      emailTo.split(/[\s,;]+/).map(e=>e.trim().toLowerCase()).filter(Boolean)
+    )];
+    const emailRe=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+    const invalid=emails.filter(e=>!emailRe.test(e));
+    if(!emails.length){ setEmailMsg({type:"error",text:"Please enter at least one email address."}); return; }
+    if(invalid.length){ setEmailMsg({type:"error",text:`Invalid address${invalid.length>1?"es":""}: ${invalid.join(", ")}`}); return; }
     if(!activeDoc){ setEmailMsg({type:"error",text:"No document open."}); return; }
     setEmailSending(true);
     try{
@@ -2529,34 +2767,41 @@ export default function DocumentsPage() {
       const senderName=(prof?.email||user?.email||"A NkoAha user").split("@")[0];
       const senderEmail=prof?.email||user?.email||"";
 
-      const{data,error}=await supabase.functions.invoke("send-document-email",{
-        body:{
-          to,
-          senderName,
-          senderEmail,
-          documentTitle:docTitle||activeDoc.title||"Document",
-          message:emailNote.trim()||undefined,
-          pdfBase64,
-        },
-      });
-      if(error||(data&&(data as any).error)){
-        const detail=(data as any)?.detail||(data as any)?.error||error?.message||"Unknown error";
-        setEmailMsg({type:"error",text:"Could not send: "+detail});
-        setEmailSending(false); return;
+      // Send to each recipient; collect any failures.
+      const failed:string[]=[];
+      for(const to of emails){
+        const{data,error}=await supabase.functions.invoke("send-document-email",{
+          body:{
+            to, senderName, senderEmail,
+            documentTitle:docTitle||activeDoc.title||"Document",
+            message:emailNote.trim()||undefined,
+            pdfBase64,
+          },
+        });
+        if(error||(data&&(data as any).error)) failed.push(to);
       }
 
-      // Log the send for the audit trail
+      // Log the send for the audit trail (one entry listing all recipients).
       if(user){
         await supabase.from("activity_logs").insert({
           user_id:user.id, action:"document_emailed", document_id:activeDoc.id,
-          metadata:{ document_title:docTitle, sent_to:to, status:"sent" },
+          metadata:{ document_title:docTitle, sent_to:emails.join(", "), status:failed.length?"partial":"sent" },
         });
       }
 
-      setEmailMsg({type:"success",text:`Sent to ${to}. The PDF is attached and they've been invited to join NkoAha.`});
+      const sentCount=emails.length-failed.length;
+      if(failed.length && sentCount===0){
+        setEmailMsg({type:"error",text:`Could not send to any recipient. Check the addresses and try again.`});
+        setEmailSending(false); return;
+      }
+      if(failed.length){
+        setEmailMsg({type:"success",text:`Sent to ${sentCount} of ${emails.length}. Failed: ${failed.join(", ")}.`});
+      }else{
+        setEmailMsg({type:"success",text:`Sent to ${sentCount} recipient${sentCount>1?"s":""}. The PDF is attached and they've been invited to join NkoAha.`});
+      }
       setEmailTo(""); setEmailNote("");
       setEmailSending(false);
-      setTimeout(()=>{ setShowEmailSend(false); setEmailMsg(null); },2200);
+      setTimeout(()=>{ setShowEmailSend(false); setEmailMsg(null); },2600);
     }catch(e:any){
       setEmailMsg({type:"error",text:"Failed: "+(e?.message||String(e))});
       setEmailSending(false);
@@ -2872,11 +3117,10 @@ export default function DocumentsPage() {
     try{
       const pages=await bakePages();
       const html=(pages[0]||"").startsWith("__new__:")?pages[0].slice(8):"";
-      const overlaysHtml=newDocOverlays.map(ov=>`<img src="${ov.content}" crossorigin="anonymous" style="position:absolute;left:${ov.x}%;top:${ov.y}%;width:${(ov.fontSize||20)*10}px;max-width:70%;object-fit:contain;"/>`).join("");
 
       if(fmt==="docx"){
-        // HTML → Word. (Absolutely-positioned overlay images don't translate to
-        // Word's flow layout, so for DOCX the signature is appended at the end.)
+        // HTML → Word via html-docx-js. Fidelity is imperfect (free library),
+        // but it's a genuine editable .docx — offered as a convenience.
         const htmlDocx=await loadHtmlDocx();
         if(!htmlDocx?.asBlob){ alert("Word export library couldn't load. Try PDF instead."); return; }
         const sigBlock = newDocOverlays.length
@@ -2889,33 +3133,14 @@ export default function DocumentsPage() {
         a.href=objUrl; a.download=`${safeTitle}.docx`;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         URL.revokeObjectURL(objUrl);
+        if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
+          setTimeout(()=>{ setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id)); setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null); },1000);
+        }
       }else{
-        // PDF via jsPDF.html. Holder is ON-SCREEN but invisible (opacity:0) —
-        // a holder at left:-99999px isn't laid out by some browsers, which made
-        // html2canvas capture blank pages.
-        const jspdf=await loadJsPdf();
-        const { jsPDF }=jspdf;
-        const holder=document.createElement("div");
-        holder.style.cssText="position:fixed;left:0;top:0;width:794px;background:#fff;z-index:-1;opacity:0;pointer-events:none;padding:72px 64px;font-family:'Times New Roman',Georgia,serif;font-size:12pt;line-height:1.6;color:#000;box-sizing:border-box;";
-        holder.innerHTML=`<div style="position:relative">${html}${overlaysHtml}</div>`;
-        document.body.appendChild(holder);
-        // Let the browser lay it out and load the signature/overlay images.
-        await new Promise(r=>requestAnimationFrame(()=>r(null)));
-        const imgs=holder.querySelectorAll("img");
-        await Promise.all(Array.from(imgs).map(img=>(img as HTMLImageElement).complete?Promise.resolve():new Promise(res=>{img.addEventListener("load",()=>res(null));img.addEventListener("error",()=>res(null));})));
-        await new Promise(r=>setTimeout(r,150));
-        const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
-        try{
-          await pdf.html(holder,{ autoPaging:"text", margin:[40,40,40,40], html2canvas:{ scale:0.72, useCORS:true, backgroundColor:"#ffffff" }, width:515, windowWidth:794 });
-        }finally{ document.body.removeChild(holder); }
-        pdf.save(`${safeTitle}.pdf`);
-      }
-
-      if(myRoute&&myRoute.status==="completed"&&myRoute.is_final){
-        setTimeout(()=>{
-          setDocuments(prev=>prev.filter(d=>d.id!==activeDoc?.id));
-          setActiveDoc(null);setPdfDoc(null);setDocxPdfDoc(null);
-        },1000);
+        // PDF for editable docs → use the PROVEN print flow (iframe + browser
+        // "Save as PDF"). jsPDF.html produced blank/97-page output for reflowing
+        // content; the print path renders correctly, so we reuse it.
+        await renderDocForPrint();
       }
     }catch(e:any){
       alert("Could not export the document: "+(e?.message||"unknown error"));
@@ -3375,6 +3600,16 @@ export default function DocumentsPage() {
                         {converting?"Converting…":"Convert"}
                       </button>
                     )}
+                    <button className="dp-btn dp-btn-ghost" onClick={()=>mergeInputRef.current?.click()} title="Add pages from another document" disabled={merging}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                      {merging?"Merging…":"Add pages"}
+                    </button>
+                    <input ref={mergeInputRef} type="file" accept=".pdf,.docx" hidden
+                      onChange={e=>{ const f=e.target.files?.[0]; if(f) setPendingMergeFile(f); e.target.value=""; }}/>
+                    <button className="dp-btn dp-btn-ghost" onClick={openPageManager} title="Reorder or delete pages" disabled={merging}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                      Manage pages
+                    </button>
                     <button className="dp-btn dp-btn-ghost" onClick={openRoutingModal}><Ico.Route/> Route</button>
                     <div style={{width:1,height:20,background:"var(--border)",flexShrink:0,margin:"0 2px"}}/>
                     <button className="dp-btn dp-btn-ghost" onClick={handleDownloadDoc} title="Download as PDF">
@@ -3971,6 +4206,88 @@ export default function DocumentsPage() {
         )}
       </main>
 
+      {showPageMgr&&activeDoc&&(
+        <div className="dp-modal-backdrop" onClick={()=>!pmApplying&&setShowPageMgr(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:560,maxWidth:"96vw",maxHeight:"88vh",display:"flex",flexDirection:"column"}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Manage pages</div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:14}}>
+              Reorder with the arrows, remove pages you don't need, or add more. {pmPages.length} page{pmPages.length!==1?"s":""}.
+            </div>
+
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              <button className="dp-btn dp-btn-ghost" style={{fontSize:12}} disabled={pmApplying}
+                onClick={()=>{ setShowPageMgr(false); mergeInputRef.current?.click(); }}>
+                ＋ Add more pages
+              </button>
+            </div>
+
+            {pmLoading ? (
+              <div style={{padding:30,textAlign:"center",color:"var(--muted)",fontSize:13}}>
+                <div className="dp-spinner" style={{width:18,height:18,margin:"0 auto 10px"}}/>Loading pages…
+              </div>
+            ) : (
+              <div style={{overflowY:"auto",flex:1,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:12,padding:"4px 2px"}}>
+                {pmPages.map((pg,idx)=>(
+                  <div key={pg.origIndex+"-"+idx} style={{border:"1px solid var(--border)",borderRadius:8,overflow:"hidden",background:"#fff",position:"relative"}}>
+                    <div style={{position:"absolute",top:4,left:4,background:"rgba(0,0,0,.7)",color:"#fff",fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10,fontFamily:"var(--mono)"}}>{idx+1}</div>
+                    <img src={pg.thumb} alt={`Page ${idx+1}`} style={{width:"100%",display:"block",borderBottom:"1px solid var(--border)"}}/>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"8px 4px",background:"#faf9f8"}}>
+                      <button onClick={()=>pmMove(idx,-1)} disabled={idx===0||pmApplying} title="Move earlier"
+                        style={{width:30,height:28,borderRadius:6,border:"1px solid var(--border,#e7e4df)",background:idx===0?"#f0ede8":"#fff",color:idx===0?"#ccc":"#1c1917",cursor:idx===0?"default":"pointer",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>←</button>
+                      <button onClick={()=>pmMove(idx,1)} disabled={idx===pmPages.length-1||pmApplying} title="Move later"
+                        style={{width:30,height:28,borderRadius:6,border:"1px solid var(--border,#e7e4df)",background:idx===pmPages.length-1?"#f0ede8":"#fff",color:idx===pmPages.length-1?"#ccc":"#1c1917",cursor:idx===pmPages.length-1?"default":"pointer",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>→</button>
+                      <button onClick={()=>pmDelete(idx)} disabled={pmPages.length<=1||pmApplying} title="Delete this page"
+                        style={{width:30,height:28,borderRadius:6,border:"1px solid #fecaca",background:"#fff",color:"#dc2626",cursor:pmPages.length<=1?"default":"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",opacity:pmPages.length<=1?.4:1}}>🗑</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:16,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setShowPageMgr(false)} disabled={pmApplying}>Cancel</button>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>pmApply("new")} disabled={pmApplying||pmLoading||!pmPages.length}>
+                {pmApplying?"Saving…":"Save as new document"}
+              </button>
+              <button className="dp-btn dp-btn-primary" onClick={()=>pmApply("replace")} disabled={pmApplying||pmLoading||!pmPages.length}>
+                {pmApplying?"Saving…":"Apply changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingMergeFile&&activeDoc&&(
+        <div className="dp-modal-backdrop" onClick={()=>!merging&&setPendingMergeFile(null)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:420,maxWidth:"94vw"}}>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Add pages to document</div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:16,lineHeight:1.5}}>
+              The pages from <strong>{pendingMergeFile.name}</strong> will be added to the end of "{activeDoc.title}". You can switch between all pages afterward.
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <button className="dp-btn dp-btn-primary" disabled={merging} style={{justifyContent:"flex-start",padding:"12px 16px"}}
+                onClick={()=>doMerge(pendingMergeFile,"new")}>
+                📄 Create a new combined document {merging?"…":""}
+                <span style={{display:"block",fontSize:10.5,opacity:.85,fontWeight:400,marginTop:2}}>Keeps the original untouched</span>
+              </button>
+              <button className="dp-btn dp-btn-ghost" disabled={merging} style={{justifyContent:"flex-start",padding:"12px 16px"}}
+                onClick={()=>doMerge(pendingMergeFile,"replace")}>
+                🔁 Add to this document
+                <span style={{display:"block",fontSize:10.5,color:"var(--muted)",fontWeight:400,marginTop:2}}>Updates the current document in place</span>
+              </button>
+            </div>
+            {(activeDoc.format==="docx") && (
+              <div style={{fontSize:10.5,color:"var(--amber,#b45309)",marginTop:12,lineHeight:1.5}}>
+                Note: this document is a Word file. After merging it becomes a PDF (merged pages are PDF).
+              </div>
+            )}
+            <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setPendingMergeFile(null)} disabled={merging}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSignGuide&&activeDoc&&(
         <div className="dp-modal-backdrop" onClick={()=>setShowSignGuide(false)}>
           <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:420,maxWidth:"94vw"}}>
@@ -4000,9 +4317,9 @@ export default function DocumentsPage() {
             <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:18}}>Choose the format for "{activeDoc.title}".</div>
             <div style={{display:"flex",flexDirection:"column",gap:10}}>
               <button className="dp-btn dp-btn-primary" style={{justifyContent:"flex-start",padding:"12px 16px"}}
-                onClick={()=>exportEditableDoc("pdf")}>📄 PDF document</button>
+                onClick={()=>exportEditableDoc("pdf")}>📄 PDF — opens print, choose "Save as PDF"</button>
               <button className="dp-btn dp-btn-ghost" style={{justifyContent:"flex-start",padding:"12px 16px"}}
-                onClick={()=>exportEditableDoc("docx")}>📝 Word document (DOCX)</button>
+                onClick={()=>exportEditableDoc("docx")}>📝 Word (DOCX) — editable, basic formatting</button>
             </div>
             {newDocOverlays.length>0&&(
               <div style={{fontSize:10.5,color:"var(--amber,#b45309)",marginTop:12,lineHeight:1.5}}>
@@ -4171,7 +4488,7 @@ export default function DocumentsPage() {
                       <div className="dp-route-user-role">{u.email}</div>
                     </div>
                     <span style={{fontSize:10,color:"var(--muted)",background:"var(--bg)",padding:"2px 7px",borderRadius:20,border:"1px solid var(--border)"}}>
-                      {u.role==="organization"?"Admin":u.role==="organization_member"?"Member":"Individual"}
+                      {u.role==="organization"?"Organization":u.role==="organization_member"?"Member":u.role==="admin"?"Admin":"Individual"}
                     </span>
                   </div>
                 ))
@@ -4213,17 +4530,20 @@ export default function DocumentsPage() {
             </p>
 
             <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
-              Recipient email
+              Recipient email(s)
             </div>
-            <input
+            <textarea
               className="dp-auth-input"
-              type="email"
-              placeholder="name@example.com"
+              placeholder="name@example.com, another@example.com"
               autoFocus
+              rows={2}
               value={emailTo}
               onChange={e=>{setEmailTo(e.target.value);setEmailMsg(null);}}
-              style={{marginBottom:12}}
+              style={{marginBottom:4,width:"100%",resize:"vertical",minHeight:44,fontFamily:"var(--font)"}}
             />
+            <div style={{fontSize:10.5,color:"var(--muted)",marginBottom:12}}>
+              Separate multiple addresses with commas, spaces, or new lines.
+            </div>
 
             <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
               Add a note (optional)
