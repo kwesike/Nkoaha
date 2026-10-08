@@ -2196,9 +2196,29 @@ export default function DocumentsPage() {
     openDocument(nd);
   };
 
+  // Does the user have an active (non-expired) paid subscription? Used to gate
+  // premium formats (XLSX/PPT) to subscribers only.
+  async function hasActiveSubscription(userId:string):Promise<boolean>{
+    const{data:sub}=await supabase.from("subscriptions")
+      .select("status,expires_at").eq("user_id",userId).eq("status","active")
+      .order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(!sub) return false;
+    if(sub.expires_at && new Date(sub.expires_at) < new Date()) return false;
+    return true;
+  }
+
   const uploadFile=async(file:File)=>{
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
-    if(!file.name.match(/\.(docx|pdf)$/i)){alert("Only .docx and .pdf files are supported.");return;}
+    const isOfficeExtra = /\.(xlsx|pptx)$/i.test(file.name); // premium formats
+    if(!file.name.match(/\.(docx|pdf|xlsx|pptx)$/i)){
+      alert("Supported files: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx).");
+      return;
+    }
+    // XLSX/PPT are subscriber-only.
+    if(isOfficeExtra && !(await hasActiveSubscription(user.id))){
+      alert("Excel and PowerPoint uploads are available on paid plans. Upgrade in Billing to use them. PDF and Word remain available on the free plan.");
+      return;
+    }
     if(!(await checkDocLimit(user.id)))return;
 
     // ── Enforce org doc limit ──
@@ -2221,19 +2241,38 @@ export default function DocumentsPage() {
     setConverting(true);
     let fileUrl="",htmlContent="",format:DocFormat="new",pages=1;
     try{
-      const path=`docs/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
-      const{error:upErr}=await supabase.storage.from("documents").upload(path,file);
-      if(!upErr)fileUrl=path; // store the PATH, not a public URL (bucket is private)
-      if(file.name.match(/\.docx$/i)){
-        format="docx";htmlContent=await docxToHtml(await file.arrayBuffer());
-        pages=splitDocxHtmlIntoPages(htmlContent).length;
-      }else{
-        format="pdf";
+      if(isOfficeExtra){
+        // XLSX / PPTX → convert to PDF (iLovePDF officepdf), store the PDF, and
+        // treat the document as a PDF from here (renders with overlays like any
+        // converted file). The spreadsheet/deck isn't editable in-app.
+        const fd=new FormData(); fd.append("file",file,file.name); fd.append("tool","officepdf");
+        const{data:{session}}=await supabase.auth.getSession();
+        const supaUrl=(supabase as any).supabaseUrl||import.meta.env.VITE_SUPABASE_URL;
+        const resp=await fetch(`${supaUrl}/functions/v1/convert-office-pdf`,{method:"POST",headers:{Authorization:`Bearer ${session?.access_token||""}`},body:fd});
+        if(!resp.ok){ throw new Error("Conversion failed ("+resp.status+")"); }
+        const pdfBlob=await resp.blob();
+        const path=`docs/${Date.now()}-${file.name.replace(/\.(xlsx|pptx)$/i,"").replace(/[^a-zA-Z0-9._-]/g,"_")}.pdf`;
+        const{error:upErr}=await supabase.storage.from("documents").upload(path,pdfBlob,{contentType:"application/pdf",upsert:true});
+        if(upErr) throw new Error(upErr.message);
+        fileUrl=path; format="pdf";
         const pdfjs=await loadPdfJs();
-        const tmp=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+        const tmp=await pdfjs.getDocument({data:new Uint8Array(await pdfBlob.arrayBuffer())}).promise;
         pages=tmp.numPages;
+      }else{
+        const path=`docs/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_")}`;
+        const{error:upErr}=await supabase.storage.from("documents").upload(path,file);
+        if(!upErr)fileUrl=path; // store the PATH, not a public URL (bucket is private)
+        if(file.name.match(/\.docx$/i)){
+          format="docx";htmlContent=await docxToHtml(await file.arrayBuffer());
+          pages=splitDocxHtmlIntoPages(htmlContent).length;
+        }else{
+          format="pdf";
+          const pdfjs=await loadPdfJs();
+          const tmp=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+          pages=tmp.numPages;
+        }
       }
-    }catch(e){console.error(e);setConverting(false);alert(`Could not process "${file.name}".`);return;}
+    }catch(e:any){console.error(e);setConverting(false);alert(`Could not process "${file.name}": ${e?.message||"unknown error"}`);return;}
     setConverting(false);
     const{data}=await supabase.from("documents").insert({
       owner_id:user.id,sender_id:user.id,uploaded_by:user.id,
@@ -3435,9 +3474,9 @@ export default function DocumentsPage() {
             <span className="dp-brand-name">Documents</span>
           </div>
           <div className="dp-sb-actions">
-            <button className="dp-sb-btn primary" onClick={()=>fileInputRef.current?.click()}><Ico.Upload/> Upload .docx or .pdf</button>
+            <button className="dp-sb-btn primary" onClick={()=>fileInputRef.current?.click()}><Ico.Upload/> Upload document</button>
             <button className="dp-sb-btn ghost" onClick={createNew}><Ico.NewDoc/> New Document</button>
-            <input hidden ref={fileInputRef} type="file" accept=".docx,.pdf"
+            <input hidden ref={fileInputRef} type="file" accept=".docx,.pdf,.xlsx,.pptx"
               onChange={e=>{const f=e.target.files?.[0];if(f)uploadFile(f);e.target.value="";}}/>
             <input hidden ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp"
               onChange={e=>{const f=e.target.files?.[0];if(f)handleImageUpload(f);e.target.value="";}}/>
@@ -3445,7 +3484,7 @@ export default function DocumentsPage() {
         </div>
         <div className="dp-doc-list">
           {documents.length===0
-            ?<div style={{padding:"24px 10px",textAlign:"center",color:"rgba(255,255,255,.18)",fontSize:12,lineHeight:1.5}}>No documents yet.<br/>Upload a .docx or .pdf.</div>
+            ?<div style={{padding:"24px 10px",textAlign:"center",color:"rgba(255,255,255,.18)",fontSize:12,lineHeight:1.5}}>No documents yet.<br/>Upload a PDF, Word, Excel or PowerPoint file.</div>
             :<>
               <div className="dp-doc-section">My Documents</div>
               {documents.map(doc=>(
@@ -3637,7 +3676,7 @@ export default function DocumentsPage() {
           <div className="dp-empty">
             <div className="dp-empty-icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
             <p>No document open</p>
-            <span>Upload a .docx or .pdf, or create a new document from the sidebar</span>
+            <span>Upload a PDF, Word, Excel or PowerPoint file. or create a new document from the sidebar</span>
           </div>
         )}
 
@@ -4232,12 +4271,18 @@ export default function DocumentsPage() {
                     <div style={{position:"absolute",top:4,left:4,background:"rgba(0,0,0,.7)",color:"#fff",fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10,fontFamily:"var(--mono)"}}>{idx+1}</div>
                     <img src={pg.thumb} alt={`Page ${idx+1}`} style={{width:"100%",display:"block",borderBottom:"1px solid var(--border)"}}/>
                     <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"8px 4px",background:"#faf9f8"}}>
-                      <button onClick={()=>pmMove(idx,-1)} disabled={idx===0||pmApplying} title="Move earlier"
-                        style={{width:30,height:28,borderRadius:6,border:"1px solid var(--border,#e7e4df)",background:idx===0?"#f0ede8":"#fff",color:idx===0?"#ccc":"#1c1917",cursor:idx===0?"default":"pointer",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>←</button>
-                      <button onClick={()=>pmMove(idx,1)} disabled={idx===pmPages.length-1||pmApplying} title="Move later"
-                        style={{width:30,height:28,borderRadius:6,border:"1px solid var(--border,#e7e4df)",background:idx===pmPages.length-1?"#f0ede8":"#fff",color:idx===pmPages.length-1?"#ccc":"#1c1917",cursor:idx===pmPages.length-1?"default":"pointer",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>→</button>
-                      <button onClick={()=>pmDelete(idx)} disabled={pmPages.length<=1||pmApplying} title="Delete this page"
-                        style={{width:30,height:28,borderRadius:6,border:"1px solid #fecaca",background:"#fff",color:"#dc2626",cursor:pmPages.length<=1?"default":"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",opacity:pmPages.length<=1?.4:1}}>🗑</button>
+                      {(()=>{ const dis=idx===0||pmApplying; return (
+                        <button onClick={()=>pmMove(idx,-1)} disabled={dis} title={idx===0?"Already first":"Move earlier"}
+                          style={{width:30,height:28,borderRadius:6,border:"1px solid #d6d3d1",background:"#fff",color:"#1c1917",cursor:dis?"not-allowed":"pointer",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",opacity:dis?0.35:1}}>←</button>
+                      );})()}
+                      {(()=>{ const dis=idx===pmPages.length-1||pmApplying; return (
+                        <button onClick={()=>pmMove(idx,1)} disabled={dis} title={idx===pmPages.length-1?"Already last":"Move later"}
+                          style={{width:30,height:28,borderRadius:6,border:"1px solid #d6d3d1",background:"#fff",color:"#1c1917",cursor:dis?"not-allowed":"pointer",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",opacity:dis?0.35:1}}>→</button>
+                      );})()}
+                      {(()=>{ const dis=pmPages.length<=1||pmApplying; return (
+                        <button onClick={()=>pmDelete(idx)} disabled={dis} title="Delete this page"
+                          style={{width:30,height:28,borderRadius:6,border:"1px solid #fecaca",background:"#fff",color:"#dc2626",cursor:dis?"not-allowed":"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",opacity:dis?0.35:1}}>🗑</button>
+                      );})()}
                     </div>
                   </div>
                 ))}
