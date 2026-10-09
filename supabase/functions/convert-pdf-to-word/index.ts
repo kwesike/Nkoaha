@@ -1,14 +1,16 @@
 // @ts-nocheck
 // Supabase Edge Function: convert-pdf-to-word
 //
-// Converts a PDF to an editable Word (.docx) using ConvertAPI. iLovePDF's API
-// doesn't offer PDF→Word (only Office→PDF), so this uses ConvertAPI for that
-// one direction. The secret stays in Supabase, never the browser.
+// Converts a PDF into an editable Office file (Word .docx, Excel .xlsx or
+// PowerPoint .pptx) using ConvertAPI. iLovePDF's API doesn't offer PDF→Office
+// (only Office→PDF), so this handles that direction. Pass the target with a
+// "to" form field (docx | xlsx | pptx); it defaults to docx so older callers
+// keep working. The secret stays in Supabase, never the browser.
 //
 // ConvertAPI flow (simplest form — upload + convert in one call):
-//   POST https://v2.convertapi.com/convert/pdf/to/docx?Secret=XXXX
-//        multipart/form-data with the PDF as "File"
-//   → returns JSON with a Files[0].Url (the converted .docx) OR base64 FileData
+//   POST https://v2.convertapi.com/convert/pdf/to/{docx|xlsx|pptx}
+//        Authorization: Bearer <token>, multipart/form-data with the PDF as "File"
+//   → returns JSON with a Files[0].Url (download link) OR base64 FileData
 //
 // Required Supabase secret:
 //   CONVERTAPI_SECRET   (your ConvertAPI secret token)
@@ -37,14 +39,24 @@ serve(async (req) => {
       return json({ error: "No file provided (expected multipart field 'file')." }, 400);
     }
 
-    // ── Call ConvertAPI: pdf → docx, return the file as base64 in JSON ──
+    // Target office format. Defaults to docx so existing callers keep working.
+    // Allow-list the office targets ConvertAPI supports converting a PDF into.
+    const TARGETS: Record<string, { mime: string; ext: string }> = {
+      docx: { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",   ext: "docx" },
+      xlsx: { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",         ext: "xlsx" },
+      pptx: { mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation", ext: "pptx" },
+    };
+    const requested = String(form.get("to") || "docx").toLowerCase();
+    const target = TARGETS[requested] ? requested : "docx";
+
+    // ── Call ConvertAPI: pdf → {target}, return the file as base64 in JSON ──
     // Modern ConvertAPI auth = Bearer API token in the Authorization header.
     const apiForm = new FormData();
     apiForm.append("File", file, file.name || "document.pdf");
     apiForm.append("StoreFile", "false"); // return inline, don't store on their server
 
     const res = await fetch(
-      `https://v2.convertapi.com/convert/pdf/to/docx`,
+      `https://v2.convertapi.com/convert/pdf/to/${target}`,
       { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` }, body: apiForm }
     );
 
@@ -78,8 +90,8 @@ serve(async (req) => {
     return new Response(bytes, {
       headers: {
         ...CORS,
-        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${(file.name || "document").replace(/\.[^.]+$/, "")}.docx"`,
+        "Content-Type": TARGETS[target].mime,
+        "Content-Disposition": `attachment; filename="${(file.name || "document").replace(/\.[^.]+$/, "")}.${TARGETS[target].ext}"`,
       },
     });
   } catch (e) {
