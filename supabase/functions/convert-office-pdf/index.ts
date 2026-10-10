@@ -18,6 +18,7 @@
 // Returns the resulting PDF with Content-Type application/pdf.
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { unzipSync, zipSync } from "https://esm.sh/fflate@0.8.2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -27,6 +28,81 @@ const CORS = {
 };
 
 const API = "https://api.ilovepdf.com";
+
+// ── Make a spreadsheet print without clipping ──────────────────────────────
+// Excel/LibreOffice print a sheet at 100% scale in portrait by default, so any
+// columns past one page width get chopped off when converted to PDF. We edit
+// ONLY the page-setup XML inside the .xlsx (no cell/content changes) to:
+//   • fit all columns to one page width  (fitToWidth=1, fitToHeight=0)
+//   • print landscape for more room
+// which is exactly Excel's "Fit All Columns on One Page". Everything else in
+// the workbook is preserved byte-for-byte. On ANY failure we return the
+// original bytes so conversion still succeeds (worst case = old behaviour).
+function fitXlsxToWidth(bytes: Uint8Array): Uint8Array {
+  try {
+    const files = unzipSync(bytes);
+    const dec = new TextDecoder();
+    const enc = new TextEncoder();
+    let changed = false;
+    for (const path of Object.keys(files)) {
+      if (
+        !path.startsWith("xl/worksheets/sheet") ||
+        !path.endsWith(".xml") ||
+        path.includes("/_rels/")
+      ) continue;
+      let xml = dec.decode(files[path]);
+
+      // 1) sheetPr must carry <pageSetUpPr fitToPage="1"/> or fitToWidth/Height
+      //    are ignored by the spec.
+      if (/<sheetPr\b[^>]*\/>/.test(xml)) {
+        xml = xml.replace(/<sheetPr\b([^>]*)\/>/, '<sheetPr$1><pageSetUpPr fitToPage="1"/></sheetPr>');
+      } else if (/<sheetPr\b[^>]*>/.test(xml)) {
+        if (/<pageSetUpPr\b[^>]*>/.test(xml)) {
+          xml = xml.replace(/<pageSetUpPr\b([^>]*?)\s*\/?>/, (_m, a) => {
+            let attrs = a as string;
+            attrs = /fitToPage\s*=/.test(attrs)
+              ? attrs.replace(/fitToPage\s*=\s*"[^"]*"/, 'fitToPage="1"')
+              : attrs + ' fitToPage="1"';
+            return `<pageSetUpPr${attrs}/>`;
+          });
+        } else {
+          // pageSetUpPr is the last optional child of sheetPr — insert before close.
+          xml = xml.replace(/<\/sheetPr>/, '<pageSetUpPr fitToPage="1"/></sheetPr>');
+        }
+      } else {
+        // No sheetPr at all — it must be the first child of <worksheet>.
+        xml = xml.replace(/(<worksheet\b[^>]*>)/, '$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
+      }
+
+      // 2) pageSetup: landscape + fit to width, unlimited pages tall.
+      if (/<pageSetup\b[^>]*>/.test(xml)) {
+        xml = xml.replace(/<pageSetup\b([^>]*?)\s*\/?>/, (_m, a) => {
+          let attrs = a as string;
+          const set = (name: string, val: string) => {
+            const re = new RegExp(name + '\\s*=\\s*"[^"]*"');
+            attrs = re.test(attrs) ? attrs.replace(re, `${name}="${val}"`) : attrs + ` ${name}="${val}"`;
+          };
+          set("orientation", "landscape");
+          set("fitToWidth", "1");
+          set("fitToHeight", "0");
+          return `<pageSetup${attrs}/>`;
+        });
+      } else if (/<pageMargins\b[^>]*>/.test(xml)) {
+        // pageSetup follows pageMargins in schema order.
+        xml = xml.replace(/(<pageMargins\b[^>]*\/?>)/, '$1<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>');
+      } else {
+        xml = xml.replace(/<\/worksheet>/, '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>');
+      }
+
+      files[path] = enc.encode(xml);
+      changed = true;
+    }
+    if (!changed) return bytes;
+    return zipSync(files);
+  } catch (_e) {
+    return bytes; // never block conversion on a page-setup tweak
+  }
+}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -79,9 +155,24 @@ serve(async (req) => {
     const base = `https://${server}`;
 
     // ── 3. Upload the file ──
+    // For spreadsheets, first adjust page setup so wide columns aren't clipped
+    // when converted to PDF (fit-to-width + landscape). Other formats upload
+    // unchanged.
+    let uploadBlob: Blob = file;
+    if (tool === "officepdf" && /\.xlsx$/i.test(filename)) {
+      try {
+        const inBytes = new Uint8Array(await file.arrayBuffer());
+        const outBytes = fitXlsxToWidth(inBytes);
+        uploadBlob = new Blob([outBytes], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+      } catch (_e) {
+        uploadBlob = file; // fall back to the original on any error
+      }
+    }
     const upForm = new FormData();
     upForm.append("task", task);
-    upForm.append("file", file, filename);
+    upForm.append("file", uploadBlob, filename);
     const upRes = await fetch(`${base}/v1/upload`, {
       method: "POST",
       headers: bearer,

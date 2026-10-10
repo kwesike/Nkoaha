@@ -51,9 +51,14 @@ const STYLES = `
     --font:'DM Sans',sans-serif;--mono:'DM Mono',monospace;--page-w:816px;
   }
   .dp-root{display:flex;height:100vh;font-family:var(--font);background:var(--bg);overflow:hidden;color:var(--text)}
-  .dp-sidebar{width:var(--sidebar-w);background:var(--sidebar);display:flex;flex-direction:column;flex-shrink:0;border-right:1px solid rgba(255,255,255,.05)}
+  .dp-sidebar{width:var(--sidebar-w);background:var(--sidebar);display:flex;flex-direction:column;flex-shrink:0;border-right:1px solid rgba(255,255,255,.05);transition:width .18s ease}
+  .dp-sidebar.collapsed{width:0;min-width:0;overflow:hidden;border-right:none}
   .dp-sb-head{padding:18px 12px 12px;border-bottom:1px solid rgba(255,255,255,.06)}
   .dp-brand{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+  .dp-collapse-btn{margin-left:auto;background:rgba(255,255,255,.06);border:none;color:rgba(255,255,255,.6);width:26px;height:26px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
+  .dp-collapse-btn:hover{background:rgba(255,255,255,.12);color:#fff}
+  .dp-expand-btn{background:transparent;border:1px solid var(--border);color:var(--muted);width:32px;height:32px;border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
+  .dp-expand-btn:hover{background:var(--bg);color:var(--accent);border-color:var(--accent)}
   .dp-brand-mark{width:28px;height:28px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 3px rgba(124,58,237,.2)}
   .dp-brand-name{font-size:13px;font-weight:600;color:rgba(255,255,255,.9);letter-spacing:.04em}
   .dp-sb-actions{display:flex;flex-direction:column;gap:6px}
@@ -1770,6 +1775,14 @@ export default function DocumentsPage() {
   // Counts as creating a document, so it respects the same tier limits.
   // Returns the new document id, or null on failure/limit.
   const [showConvert, setShowConvert] = useState(false);
+  // Collapse the Documents panel to give the editor more room (remembered per browser).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(()=>{
+    try{ return localStorage.getItem("dp_sidebar_collapsed")==="1"; }catch{ return false; }
+  });
+  const toggleSidebar=()=>setSidebarCollapsed(v=>{
+    const nv=!v; try{ localStorage.setItem("dp_sidebar_collapsed", nv?"1":"0"); }catch{}
+    return nv;
+  });
   const [showDownloadFmt, setShowDownloadFmt] = useState(false); // editable-doc format picker
   const [merging, setMerging] = useState(false);
   const [pendingMergeFile, setPendingMergeFile] = useState<File|null>(null); // file awaiting replace/new choice
@@ -3533,11 +3546,14 @@ export default function DocumentsPage() {
 
   return (
     <div className="dp-root">
-      <aside className="dp-sidebar">
+      <aside className={`dp-sidebar ${sidebarCollapsed?"collapsed":""}`}>
         <div className="dp-sb-head">
           <div className="dp-brand">
             <div className="dp-brand-mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8" stroke="white" strokeWidth="1.5" fill="none"/></svg></div>
             <span className="dp-brand-name">Documents</span>
+            <button className="dp-collapse-btn" onClick={toggleSidebar} title="Collapse panel" aria-label="Collapse documents panel">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
           </div>
           <div className="dp-sb-actions">
             <button className="dp-sb-btn primary" onClick={()=>fileInputRef.current?.click()}><Ico.Upload/> Upload document</button>
@@ -3599,6 +3615,11 @@ export default function DocumentsPage() {
 
       <main className="dp-main">
         <div className="dp-topbar">
+          {sidebarCollapsed && (
+            <button className="dp-expand-btn" onClick={toggleSidebar} title="Show documents panel" aria-label="Show documents panel">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+          )}
           {activeDoc?(
             <>
               <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled" readOnly={(activeDoc as any).isOrgDoc}/>
