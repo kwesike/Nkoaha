@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { useNavigate } from "react-router-dom";
 import LoadingScreen from "../components/LoadingScreen";
+import { logSecurityEvent } from "../lib/securityLog";
 import "./auth.css";
 import logo from "../assets/nkoaha-logo.png";
 
@@ -72,6 +73,9 @@ export default function EmailOtpVerify() {
         setLoading(false);
         return;
       }
+
+      // Record a successful login (IP + device captured server-side).
+      logSecurityEvent("login", { method: "email_otp" });
 
       // Verified — resolve role and route to the right dashboard.
       const { data: { user } } = await supabase.auth.getUser();

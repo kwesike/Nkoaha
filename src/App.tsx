@@ -7,7 +7,6 @@ import DashboardLayout from "./dashboard/layout/DashboardLayout";
 
 
 
-
 // ── Lazy-loaded pages — only downloads when the route is visited ──
 const SignupSelect                 = lazy(() => import("./auth/SignupSelect"));
 const IndividualSignup             = lazy(() => import("./auth/IndividualSignup"));
@@ -41,6 +40,7 @@ const AdminOrganizationsPage       = lazy(() => import("./admin/AdminOrganizatio
 const AdminSubscriptionsPage       = lazy(() => import("./admin/AdminSubscriptionsPage"));
 const AdminDocumentsPage           = lazy(() => import("./admin/AdminDocumentsPage"));
 const AdminAuditLogsPage           = lazy(() => import("./admin/AdminAuditlogsPage")); // lowercase 'l' matches filename
+const AdminSecurityPage            = lazy(() => import("./admin/AdminSecurityPage"));
 const SupportInboxPage             = lazy(() => import("./dashboard/support/SupportInboxPage"));
 const AdminTeamPage               = lazy(() => import("./admin/AdminTeamPage"));
 const AdminSettingsPage           = lazy(() => import("./admin/AdminSettingsPage"));
@@ -118,6 +118,7 @@ function App() {
           <Route path="/dashboard/admin/subscriptions"   element={<AdminSubscriptionsPage />} />
           <Route path="/dashboard/admin/documents"       element={<AdminDocumentsPage />} />
           <Route path="/dashboard/admin/audit"           element={<AdminAuditLogsPage />} />
+          <Route path="/dashboard/admin/security"        element={<AdminSecurityPage />} />
           <Route path="/dashboard/admin/team"            element={<AdminTeamPage />} />
           <Route path="/dashboard/admin/settings"        element={<AdminSettingsPage />} />
           <Route path="/dashboard/admin/notifications"   element={<AdminNotificationPage />} />

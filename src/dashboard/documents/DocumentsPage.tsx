@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
+import { logSecurityEvent } from "../../lib/securityLog";
 import type { JSONContent } from "@tiptap/react";
 import debounce from "lodash.debounce";
 import DocumentEditor from "./DocumentEditor";
@@ -2393,6 +2394,7 @@ export default function DocumentsPage() {
     setDocuments(prev=>prev.filter(d=>d.id!==doc.id));
     if(activeDoc?.id===doc.id){setActiveDoc(null);setPdfDoc(null);}
     await logActivity("document_deleted",doc.id,doc.title,user?.id);
+    logSecurityEvent("document_deleted",{document_id:doc.id,title:doc.title});
   };
 
   const handleTitleChange=(val:string)=>{
@@ -2569,6 +2571,7 @@ export default function DocumentsPage() {
 
     await supabase.from("documents").update({status:"sent"}).eq("id",activeDoc.id);
     await logActivity("document_sent",activeDoc.id,docTitle,user.id);
+    logSecurityEvent("document_sent",{document_id:activeDoc.id,title:docTitle,recipients:totalSteps,via:"route"});
     setShowRouteModal(false);setSelectedRoute([]);
     alert(`Document routed to ${totalSteps} recipient${totalSteps>1?"s":""} successfully.`);
   };
@@ -2788,6 +2791,7 @@ export default function DocumentsPage() {
       });
     }
     setMyRoute({...myRoute,status:"completed"});
+    logSecurityEvent("document_signed",{document_id:activeDoc.id,title:docTitle,step:myRoute?.route_order});
     setRouteActioning(false);setActionKind(null);
     alert("Document approved and signed. Your Proof certificate has been issued to your inbox.\n\nYou can now Download or Print the document — it will be removed from your list after you do.");
   };
@@ -2900,6 +2904,7 @@ export default function DocumentsPage() {
       }
 
       // Log the send for the audit trail (one entry listing all recipients).
+      logSecurityEvent("document_sent",{document_id:activeDoc.id,title:docTitle,recipients:emails.length,via:"email"});
       if(user){
         await supabase.from("activity_logs").insert({
           user_id:user.id, action:"document_emailed", document_id:activeDoc.id,

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { useNavigate } from "react-router-dom";
 import LoadingScreen from "../components/LoadingScreen";
+import { logSecurityEvent } from "../lib/securityLog";
 import "./auth.css";
 import logo from "../assets/nkoaha-logo.png";
 
@@ -42,6 +43,9 @@ export default function MFAVerify() {
         code,
       });
       if (verifyError) throw verifyError;
+
+      // Record a successful login (IP + device captured server-side).
+      logSecurityEvent("login", { method: "mfa" });
 
       /* ── Fetch profile, cache role + name, then redirect ── */
       const { data: { user } } = await supabase.auth.getUser();

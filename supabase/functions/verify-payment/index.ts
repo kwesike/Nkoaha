@@ -190,6 +190,22 @@ Deno.serve(async (req) => {
       return json({ error: "Payment verified but the subscription could not be saved.", detail: insErr.message }, 500);
     }
 
+    // ── Security event: record the successful payment with IP + device ──
+    try {
+      const { data: prof } = await admin
+        .from("profiles").select("email").eq("id", user.id).maybeSingle();
+      const xff = req.headers.get("x-forwarded-for");
+      const ip  = xff ? xff.split(",")[0].trim() : (req.headers.get("x-real-ip") || "unknown");
+      await admin.from("security_events").insert({
+        user_id:    user.id,
+        email:      prof?.email || user.email || null,
+        event_type: "payment",
+        ip_address: ip,
+        user_agent: req.headers.get("user-agent") || null,
+        metadata:   { provider, plan_id: planId, amount_ngn: expectedNgn, currency, period, tx_ref: txRef || String(uniqueRef) },
+      });
+    } catch (_e) { /* never fail the payment response over logging */ }
+
     return json({ ok: true, subscription: inserted });
   } catch (e) {
     console.error("[verify-payment] unexpected", e);
