@@ -55,10 +55,10 @@ const STYLES = `
   .dp-sidebar.collapsed{width:0;min-width:0;overflow:hidden;border-right:none}
   .dp-sb-head{padding:18px 12px 12px;border-bottom:1px solid rgba(255,255,255,.06)}
   .dp-brand{display:flex;align-items:center;gap:9px;margin-bottom:14px}
-  .dp-collapse-btn{margin-left:auto;background:rgba(255,255,255,.06);border:none;color:rgba(255,255,255,.6);width:26px;height:26px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
-  .dp-collapse-btn:hover{background:rgba(255,255,255,.12);color:#fff}
-  .dp-expand-btn{background:transparent;border:1px solid var(--border);color:var(--muted);width:32px;height:32px;border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
-  .dp-expand-btn:hover{background:var(--bg);color:var(--accent);border-color:var(--accent)}
+  .dp-collapse-btn{margin-left:auto;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);color:#fff;width:30px;height:30px;border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
+  .dp-collapse-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+  .dp-expand-btn{background:var(--accent-light);border:1px solid #c4b5fd;color:var(--accent);height:32px;padding:0 12px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:7px;flex-shrink:0;transition:all .15s;font-family:var(--font);font-size:12.5px;font-weight:600}
+  .dp-expand-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
   .dp-brand-mark{width:28px;height:28px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 3px rgba(124,58,237,.2)}
   .dp-brand-name{font-size:13px;font-weight:600;color:rgba(255,255,255,.9);letter-spacing:.04em}
   .dp-sb-actions{display:flex;flex-direction:column;gap:6px}
@@ -3552,7 +3552,7 @@ export default function DocumentsPage() {
             <div className="dp-brand-mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8" stroke="white" strokeWidth="1.5" fill="none"/></svg></div>
             <span className="dp-brand-name">Documents</span>
             <button className="dp-collapse-btn" onClick={toggleSidebar} title="Collapse panel" aria-label="Collapse documents panel">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="13 17 8 12 13 7"/><polyline points="18 17 13 12 18 7"/></svg>
             </button>
           </div>
           <div className="dp-sb-actions">
@@ -3617,7 +3617,8 @@ export default function DocumentsPage() {
         <div className="dp-topbar">
           {sidebarCollapsed && (
             <button className="dp-expand-btn" onClick={toggleSidebar} title="Show documents panel" aria-label="Show documents panel">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+              Documents
             </button>
           )}
           {activeDoc?(
