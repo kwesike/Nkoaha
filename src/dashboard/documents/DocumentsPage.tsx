@@ -1785,6 +1785,12 @@ export default function DocumentsPage() {
     return nv;
   });
   const [showDownloadFmt, setShowDownloadFmt] = useState(false); // editable-doc format picker
+  // ── AI drafting ──
+  const [showAiDraft, setShowAiDraft] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiDocType, setAiDocType] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiErr, setAiErr] = useState<string|null>(null);
   const [merging, setMerging] = useState(false);
   const [pendingMergeFile, setPendingMergeFile] = useState<File|null>(null); // file awaiting replace/new choice
   const mergeInputRef = useRef<HTMLInputElement|null>(null);
@@ -2275,6 +2281,51 @@ export default function DocumentsPage() {
     await logActivity("document_created",data.id,data.title,user.id);
     openDocument(nd);
   };
+
+  // ── Draft a document with AI (Anthropic Claude via the ai-draft edge fn) ──
+  // Paid feature (also enforced server-side). On success, creates a new editable
+  // document from the generated HTML and opens it for the user to refine.
+  async function draftWithAI(){
+    const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
+    if(!aiPrompt.trim()){ setAiErr("Describe the document you want."); return; }
+    setAiBusy(true); setAiErr(null);
+    try{
+      if(!(await checkDocLimit(user.id))){ setAiBusy(false); return; }
+      const{data:{session}}=await supabase.auth.getSession();
+      const supaUrl=(supabase as any).supabaseUrl||import.meta.env.VITE_SUPABASE_URL;
+      const resp=await fetch(`${supaUrl}/functions/v1/ai-draft`,{
+        method:"POST",
+        headers:{ "Content-Type":"application/json", Authorization:`Bearer ${session?.access_token||""}` },
+        body:JSON.stringify({ prompt:aiPrompt.trim(), docType:aiDocType||undefined }),
+      });
+      const result=await resp.json().catch(()=>({}));
+      if(!resp.ok){ throw new Error(result?.error || `Drafting failed (${resp.status}).`); }
+      const html:string = result?.html || "";
+      if(!html){ throw new Error("The draft came back empty. Try rephrasing."); }
+
+      // Derive a title from the first heading, else the doc type / brief.
+      const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+      const title = (m?.[1]?.replace(/<[^>]+>/g,"").trim() || aiDocType || "AI Draft").slice(0,120);
+
+      const tiptapJson = htmlToTipTapJson(html);
+      const{data,error}=await supabase.from("documents").insert({
+        owner_id:user.id,sender_id:user.id,uploaded_by:user.id,
+        owner_type:(activeDoc as any)?.isOrgDoc?"organization":"individual",
+        document_kind:"editor",format:"new",
+        title,content:tiptapJson,file_url:"",status:"draft",pages:1,
+      }).select().single();
+      if(error||!data){ throw new Error(error?.message || "Could not save the draft."); }
+
+      const nd:DocumentItem={id:data.id,title:data.title,fileUrl:"",format:"new",pages:1};
+      setDocuments(prev=>[nd,...prev]);
+      await logActivity("document_ai_drafted",data.id,data.title,user.id);
+      setAiBusy(false); setShowAiDraft(false); setAiPrompt(""); setAiDocType("");
+      openDocument(nd);
+    }catch(e:any){
+      setAiBusy(false);
+      setAiErr(e?.message || "Something went wrong. Please try again.");
+    }
+  }
 
   // Does the user have an active (non-expired) paid subscription? Used to gate
   // premium formats (XLSX/PPT) to subscribers only.
@@ -3563,6 +3614,10 @@ export default function DocumentsPage() {
           <div className="dp-sb-actions">
             <button className="dp-sb-btn primary" onClick={()=>fileInputRef.current?.click()}><Ico.Upload/> Upload document</button>
             <button className="dp-sb-btn ghost" onClick={createNew}><Ico.NewDoc/> New Document</button>
+            <button className="dp-sb-btn ghost" onClick={()=>{setAiErr(null);setShowAiDraft(true);}} style={{color:"#c4b5fd"}}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 4.8L18.7 9.7 13.9 11.6 12 16.4 10.1 11.6 5.3 9.7 10.1 7.8z"/><path d="M19 15l.7 1.8L21.5 17.5 19.7 18.2 19 20 18.3 18.2 16.5 17.5 18.3 16.8z"/></svg>
+              Draft with Uburu AI
+            </button>
             <input hidden ref={fileInputRef} type="file" accept=".docx,.pdf,.xlsx,.pptx"
               onChange={e=>{const f=e.target.files?.[0];if(f)uploadFile(f);e.target.value="";}}/>
             <input hidden ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp"
@@ -4466,6 +4521,57 @@ export default function DocumentsPage() {
             )}
             <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}>
               <button className="dp-btn dp-btn-ghost" onClick={()=>setShowDownloadFmt(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Draft with AI ── */}
+      {showAiDraft&&(
+        <div className="dp-modal-backdrop" onClick={()=>!aiBusy&&setShowAiDraft(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:520,maxWidth:"95vw"}}>
+            <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:4}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 4.8L18.7 9.7 13.9 11.6 12 16.4 10.1 11.6 5.3 9.7 10.1 7.8z"/></svg>
+              <div style={{fontSize:16,fontWeight:700}}>Draft with Uburu AI</div>
+            </div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:16}}>
+              Describe the document you need. AI writes a first draft you can edit, sign and route like any other. Unspecified details become fill-in placeholders.
+            </div>
+
+            <label style={{fontSize:12,fontWeight:600,color:"var(--text)",display:"block",marginBottom:6}}>Document type (optional)</label>
+            <select value={aiDocType} onChange={e=>setAiDocType(e.target.value)} disabled={aiBusy}
+              style={{width:"100%",padding:"9px 11px",border:"1.5px solid var(--border)",borderRadius:8,fontFamily:"var(--font)",fontSize:13,marginBottom:14,background:"#fff",color:"var(--text)"}}>
+              <option value="">— General —</option>
+              <option>Letter</option>
+              <option>Tenancy agreement</option>
+              <option>Employment contract</option>
+              <option>Invoice</option>
+              <option>Memo</option>
+              <option>Proposal</option>
+              <option>Non-disclosure agreement (NDA)</option>
+              <option>Receipt</option>
+              <option>Notice</option>
+              <option>Meeting minutes</option>
+            </select>
+
+            <label style={{fontSize:12,fontWeight:600,color:"var(--text)",display:"block",marginBottom:6}}>What should it say?</label>
+            <textarea value={aiPrompt} onChange={e=>setAiPrompt(e.target.value)} disabled={aiBusy}
+              placeholder={"e.g. A 12-month tenancy agreement between landlord Mr. Okeke and tenant Ms. Ada for a 2-bedroom flat in Enugu at ₦600,000 per year, payable yearly in advance, tenant covers utilities."}
+              rows={5} maxLength={6000}
+              style={{width:"100%",padding:"10px 12px",border:"1.5px solid var(--border)",borderRadius:8,fontFamily:"var(--font)",fontSize:13,resize:"vertical",outline:"none",color:"var(--text)",lineHeight:1.5}}/>
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:5}}>{aiPrompt.length}/6000 · The more detail you give, the fewer placeholders you'll fill in later.</div>
+
+            {aiErr&&(
+              <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,fontSize:12.5,background:"var(--red-bg,#fee2e2)",color:"var(--red,#991b1b)"}}>{aiErr}</div>
+            )}
+
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setShowAiDraft(false)} disabled={aiBusy}>Cancel</button>
+              <button className="dp-btn dp-btn-primary" onClick={draftWithAI} disabled={aiBusy||!aiPrompt.trim()}>
+                {aiBusy
+                  ? <><div className="dp-spinner" style={{width:14,height:14,borderWidth:2}}/> Drafting…</>
+                  : <>Generate draft</>}
+              </button>
             </div>
           </div>
         </div>
