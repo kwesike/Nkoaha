@@ -4536,6 +4536,7 @@ export default function DocumentsPage() {
             </div>
             <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:16}}>
               Describe the document you need. AI writes a first draft you can edit, sign and route like any other. Unspecified details become fill-in placeholders.
+              <span style={{display:"block",marginTop:6,color:"var(--accent)"}}>Free users get a couple of drafts per day — paid plans are unlimited.</span>
             </div>
 
             <label style={{fontSize:12,fontWeight:600,color:"var(--text)",display:"block",marginBottom:6}}>Document type (optional)</label>

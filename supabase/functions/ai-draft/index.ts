@@ -150,18 +150,48 @@ serve(async (req) => {
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-    // ── Paid-feature gate ──
+    // ── Reject blocked IPs (defense in depth; the site edge also blocks) ──
+    {
+      const xff = req.headers.get("x-forwarded-for");
+      const callerIp = xff ? xff.split(",")[0].trim() : (req.headers.get("x-real-ip") || "");
+      if (callerIp) {
+        const { data: blocked } = await admin.rpc("is_ip_blocked", { p_ip: callerIp });
+        if (blocked === true) return json({ error: "Access blocked." }, 403);
+      }
+    }
+
+    // ── Settings: provider/model + free-trial limit ──
+    const { data: settings } = await admin.from("app_settings")
+      .select("key, value").in("key", ["active_ai_provider", "active_ai_model", "ai_free_daily_limit"]);
+    const map: Record<string, string> = {};
+    for (const s of (settings || [])) map[s.key] = s.value;
+
+    // ── Access gate: subscribers get unlimited; everyone else gets N free
+    //    drafts per day (default 2, admin-tunable via ai_free_daily_limit). ──
     const { data: sub } = await admin.from("subscriptions")
       .select("status, expires_at").eq("user_id", user.id).eq("status", "active")
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     const active = !!sub && (!sub.expires_at || new Date(sub.expires_at) > new Date());
-    if (!active) return json({ error: "AI drafting is available on paid plans. Upgrade in Billing to use it." }, 402);
 
-    // ── Which provider/model is live (admin-selected) ──
-    const { data: settings } = await admin.from("app_settings")
-      .select("key, value").in("key", ["active_ai_provider", "active_ai_model"]);
-    const map: Record<string, string> = {};
-    for (const s of (settings || [])) map[s.key] = s.value;
+    let freeLimit = parseInt(map["ai_free_daily_limit"] || "2", 10);
+    if (!Number.isFinite(freeLimit) || freeLimit < 0) freeLimit = 2;
+    let freeRemaining: number | null = null;
+    if (!active) {
+      // Count today's successful drafts for this user (UTC day).
+      const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+      const { count } = await admin.from("security_events")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id).eq("event_type", "ai_draft")
+        .gte("created_at", dayStart.toISOString());
+      const used = count || 0;
+      if (used >= freeLimit) {
+        return json({
+          error: `You've used your ${freeLimit} free AI drafts for today. Upgrade in Billing for unlimited drafting, or try again tomorrow.`,
+          limitReached: true,
+        }, 402);
+      }
+      freeRemaining = Math.max(0, freeLimit - used - 1); // after this draft succeeds
+    }
     const providerId = (map["active_ai_provider"] || "anthropic").toLowerCase();
     const provider = PROVIDERS[providerId];
     if (!provider) return json({ error: `Unknown AI provider "${providerId}". Set a valid one in Admin → Settings.` }, 500);
@@ -201,7 +231,7 @@ serve(async (req) => {
       });
     } catch (_e) { /* logging must never fail the draft */ }
 
-    return json({ html, provider: providerId, model });
+    return json({ html, provider: providerId, model, freeRemaining });
   } catch (e) {
     return json({ error: "Unexpected error", detail: String((e as Error)?.message || e) }, 500);
   }
