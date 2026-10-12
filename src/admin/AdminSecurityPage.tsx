@@ -28,6 +28,21 @@ const STYLES = `
   .asec-load-more{width:100%;padding:12px;background:#faf9f8;border:none;border-top:1px solid #e7e4df;font-size:13px;font-weight:600;color:#7c3aed;cursor:pointer;font-family:'DM Sans',sans-serif}
   .asec-load-more:hover{background:#ede9fe}
   .asec-empty{padding:40px;text-align:center;color:#a8a29e;font-size:13px}
+  .asec-block-card{background:#fff;border:1px solid #e7e4df;border-radius:14px;padding:18px 20px;margin-bottom:20px}
+  .asec-block-title{font-size:14px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+  .asec-block-desc{font-size:12px;color:#78716c;margin-bottom:14px;line-height:1.5}
+  .asec-block-form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .asec-block-form input{padding:8px 11px;border:1.5px solid #e7e4df;border-radius:8px;font-size:12.5px;font-family:'DM Sans',sans-serif;outline:none;color:#1c1917}
+  .asec-block-form input:focus{border-color:#7c3aed}
+  .asec-block-btn{padding:8px 14px;border:none;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;background:#dc2626;color:#fff}
+  .asec-block-btn:hover{background:#b91c1c}
+  .asec-chip{display:inline-flex;align-items:center;gap:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:20px;padding:4px 6px 4px 12px;font-size:12px;color:#991b1b;font-family:'DM Mono',monospace;margin:0 6px 6px 0}
+  .asec-chip button{border:none;background:#fca5a5;color:#7f1d1d;border-radius:50%;width:18px;height:18px;cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .asec-chip button:hover{background:#f87171;color:#fff}
+  .asec-row-block{border:1px solid #e7e4df;background:#fff;color:#dc2626;border-radius:6px;font-size:10.5px;font-weight:700;padding:3px 8px;cursor:pointer;font-family:'DM Sans',sans-serif}
+  .asec-row-block:hover{background:#fef2f2;border-color:#fca5a5}
+  .asec-row-blocked{font-size:10px;color:#dc2626;font-weight:700}
+  .asec-block-msg{font-size:12px;color:#166534;background:#dcfce7;border-radius:8px;padding:7px 11px;margin-bottom:10px}
 `;
 
 const EVENT_LABELS: Record<string, string> = {
@@ -74,6 +89,12 @@ export default function AdminSecurityPage() {
   const [hasMore, setHasMore] = useState(false);
   const PAGE_SIZE = 50;
 
+  // ── IP blocklist ──
+  const [blocked, setBlocked] = useState<any[]>([]);
+  const [newIp, setNewIp] = useState("");
+  const [newReason, setNewReason] = useState("");
+  const [blockMsg, setBlockMsg] = useState<string | null>(null);
+
   useEffect(() => {
     const id = "asec-styles";
     if (!document.getElementById(id)) {
@@ -81,8 +102,38 @@ export default function AdminSecurityPage() {
       document.head.appendChild(el);
     }
     load(0, filter);
+    loadBlocked();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function loadBlocked() {
+    const { data } = await supabase.from("blocked_ips")
+      .select("ip,reason,created_at").order("created_at", { ascending: false });
+    setBlocked(data || []);
+  }
+
+  async function blockIp(ip: string, reason?: string) {
+    const clean = (ip || "").trim();
+    if (!clean) { setBlockMsg("Enter an IP address."); return; }
+    if (clean === "unknown") { setBlockMsg("Can't block an unknown IP."); return; }
+    setBlockMsg(null);
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase.from("blocked_ips")
+      .upsert({ ip: clean, reason: reason || null, created_by: user?.id ?? null }, { onConflict: "ip" });
+    if (error) { setBlockMsg("Could not block: " + error.message); return; }
+    setNewIp(""); setNewReason("");
+    setBlockMsg(`Blocked ${clean}. New visits from this IP are refused (within ~1 min).`);
+    loadBlocked();
+  }
+
+  async function unblockIp(ip: string) {
+    const { error } = await supabase.from("blocked_ips").delete().eq("ip", ip);
+    if (error) { setBlockMsg("Could not unblock: " + error.message); return; }
+    setBlockMsg(`Unblocked ${ip}.`);
+    loadBlocked();
+  }
+
+  const blockedSet = new Set(blocked.map(b => b.ip));
 
   async function load(pageNum: number, evFilter: string) {
     setLoading(true);
@@ -128,6 +179,34 @@ export default function AdminSecurityPage() {
           ))}
         </div>
 
+        {/* ── IP blocklist ── */}
+        <div className="asec-block-card">
+          <div className="asec-block-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>
+            Blocked IP addresses
+          </div>
+          <div className="asec-block-desc">
+            Blocked IPs are refused at the site edge (a "403 Access blocked" page) and on sensitive actions.
+            Takes effect within about a minute. You can also block an IP straight from any row in the log below.
+          </div>
+          {blockMsg && <div className="asec-block-msg">{blockMsg}</div>}
+          <div className="asec-block-form">
+            <input placeholder="IP address, e.g. 102.89.x.x" value={newIp} onChange={e => setNewIp(e.target.value)} style={{ minWidth: 200 }} />
+            <input placeholder="Reason (optional)" value={newReason} onChange={e => setNewReason(e.target.value)} style={{ minWidth: 200, flex: 1 }} />
+            <button className="asec-block-btn" onClick={() => blockIp(newIp, newReason)}>Block IP</button>
+          </div>
+          <div>
+            {blocked.length === 0
+              ? <span style={{ fontSize: 12, color: "#a8a29e" }}>No IPs blocked.</span>
+              : blocked.map(b => (
+                <span className="asec-chip" key={b.ip} title={b.reason || ""}>
+                  {b.ip}
+                  <button onClick={() => unblockIp(b.ip)} title="Unblock">×</button>
+                </span>
+              ))}
+          </div>
+        </div>
+
         <div className="asec-bar">
           <input className="asec-search" placeholder="Search by email or IP address…"
             value={search} onChange={e => setSearch(e.target.value)} />
@@ -144,19 +223,29 @@ export default function AdminSecurityPage() {
         <table className="asec-table">
           <thead>
             <tr>
-              <th>Event</th><th>User</th><th>IP address</th><th>Device</th><th>When</th>
+              <th>Event</th><th>User</th><th>IP address</th><th>Device</th><th>When</th><th></th>
             </tr>
           </thead>
           <tbody>
-            {shown.map(e => (
+            {shown.map(e => {
+              const ip = e.ip_address || "";
+              const canBlock = ip && ip !== "unknown";
+              const isBlocked = blockedSet.has(ip);
+              return (
               <tr key={e.id}>
                 <td><span className={`asec-ev ${e.event_type}`}>{EVENT_LABELS[e.event_type] || e.event_type}</span></td>
                 <td title={e.email || ""}>{e.email || "—"}</td>
-                <td className="asec-ip">{e.ip_address || "—"}</td>
+                <td className="asec-ip">{ip || "—"}</td>
                 <td className="asec-device" title={e.user_agent || ""}>{deviceLabel(e.user_agent)}</td>
                 <td title={new Date(e.created_at).toLocaleString()}>{timeAgo(e.created_at)}</td>
+                <td style={{ textAlign: "right" }}>
+                  {!canBlock ? null
+                    : isBlocked
+                      ? <span className="asec-row-blocked">blocked</span>
+                      : <button className="asec-row-block" onClick={() => blockIp(ip, `From security log · ${EVENT_LABELS[e.event_type] || e.event_type}`)}>Block</button>}
+                </td>
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
 
