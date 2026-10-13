@@ -1796,14 +1796,31 @@ export default function DocumentsPage() {
   const mergeInputRef = useRef<HTMLInputElement|null>(null);
   // Page manager: reorder / delete pages.
   const [showPageMgr, setShowPageMgr] = useState(false);
-  const [pmPages, setPmPages] = useState<{origIndex:number; thumb:string}[]>([]); // ordered list of pages
+  const [pmPages, setPmPages] = useState<{origIndex:number; thumb?:string; preview?:string}[]>([]); // ordered list of pages
   const [pmLoading, setPmLoading] = useState(false);
   const [pmApplying, setPmApplying] = useState(false);
-  const pmBytesRef = useRef<Uint8Array|null>(null); // the source PDF bytes
+  const [pmNew, setPmNew] = useState(false); // true when managing an editable ("new") doc's pages
+  const pmBytesRef = useRef<Uint8Array|null>(null); // the source PDF bytes (PDF/DOCX docs only)
 
   // Open the page manager: get the doc's PDF, render thumbnails for each page.
+  // Short text preview of an editable page's JSON content (for the page manager).
+  function pagePreviewText(pg:any):string{
+    const grab=(n:any):string => n?.type==="text" ? (n.text||"") : (n?.content||[]).map(grab).join(" ");
+    const t=(pg?.content||[]).map(grab).join(" ").replace(/\s+/g," ").trim();
+    return t ? t.slice(0,140) : "(empty page)";
+  }
+
   async function openPageManager(){
     if(!activeDoc) return;
+    // Editable ("new") documents: manage the editable pages directly — no PDF,
+    // so the document stays editable.
+    if(activeDoc.format==="new"){
+      setPmNew(true);
+      setShowPageMgr(true); setPmLoading(false);
+      setPmPages(editorPages.map((pg,i)=>({ origIndex:i, preview: pagePreviewText(pg) })));
+      return;
+    }
+    setPmNew(false);
     setShowPageMgr(true); setPmLoading(true); setPmPages([]);
     try{
       const bytes=await activeDocPdfBytes();
@@ -1843,7 +1860,45 @@ export default function DocumentsPage() {
 
   // Apply the new page order/deletions: rebuild the PDF with pdf-lib and save.
   async function pmApply(mode:"replace"|"new"){
-    if(!activeDoc||!pmBytesRef.current) return;
+    if(!activeDoc) return;
+
+    // ── Editable ("new") doc: reorder/delete the editable pages, stay editable ──
+    if(pmNew){
+      setPmApplying(true);
+      try{
+        const reordered = pmPages.map(p=>editorPages[p.origIndex]).filter(Boolean) as JSONContent[];
+        if(!reordered.length){ setPmApplying(false); return; }
+        if(mode==="replace"){
+          setEditorPages(reordered);
+          setTotalPages(reordered.length);
+          setSaveStatus("unsaved");
+          autosave(activeDoc.id, reordered, docTitle, header, footer, newDocOverlays);
+          setShowPageMgr(false); setPmApplying(false);
+        }else{
+          const{data:{user}}=await supabase.auth.getUser(); if(!user){ setPmApplying(false); return; }
+          const merged={type:"doc",content:reordered.flatMap((p:any)=>p.content||[])};
+          const title=(docTitle||activeDoc.title||"Document")+" (Reordered)";
+          const{data:nd,error}=await supabase.from("documents").insert({
+            owner_id:user.id, sender_id:user.id, uploaded_by:user.id,
+            owner_type:(activeDoc as any).isOrgDoc?"organization":"individual",
+            organization_id:(activeDoc as any).organizationId??null,
+            document_kind:"editor", format:"new", title, content:merged,
+            file_url:"", status:"draft", pages:reordered.length,
+          }).select().single();
+          if(error||!nd) throw new Error(error?.message||"insert failed");
+          const item:DocumentItem={ id:nd.id, title, fileUrl:"", format:"new", pages:reordered.length };
+          setDocuments(prev=>[item,...prev]);
+          setShowPageMgr(false); setPmApplying(false);
+          openDocument(item);
+        }
+      }catch(e:any){
+        setPmApplying(false);
+        alert("Could not apply page changes: "+(e?.message||"unknown"));
+      }
+      return;
+    }
+
+    if(!pmBytesRef.current) return;
     setPmApplying(true);
     try{
       const PDFLib=await loadPdfLib();
@@ -1940,6 +1995,49 @@ export default function DocumentsPage() {
     if(!activeDoc){ return; }
     setPendingMergeFile(null);
     setMerging(true);
+
+    // ── Editable ("new") doc: add pages as EDITABLE content from a .docx ──
+    // (keeps the document editable; PDF pages can't be made editable).
+    if(activeDoc.format==="new"){
+      try{
+        if(!/\.docx$/i.test(file.name)){
+          alert("To add pages to an editable document, use a Word (.docx) file. To add PDF pages, convert this document to PDF first (Convert button).");
+          setMerging(false); return;
+        }
+        const html=await docxToHtml(await file.arrayBuffer());
+        const addPagesArr=splitDocxHtmlIntoPages(html).map(h=>htmlToTipTapJson(h));
+        if(!addPagesArr.length){ alert("No content found in that file."); setMerging(false); return; }
+
+        if(mode==="replace"){ // append to the current editable document
+          const np=[...editorPages, ...addPagesArr];
+          setEditorPages(np); setTotalPages(np.length); setSaveStatus("unsaved");
+          autosave(activeDoc.id, np, docTitle, header, footer, newDocOverlays);
+          setMerging(false);
+        }else{ // save a new editable document = current pages + added pages
+          const{data:{user}}=await supabase.auth.getUser(); if(!user){ setMerging(false); return; }
+          const combined=[...editorPages, ...addPagesArr];
+          const merged={type:"doc",content:combined.flatMap((p:any)=>p.content||[])};
+          const title=(docTitle||activeDoc.title||"Document")+" (Combined)";
+          const{data:nd,error}=await supabase.from("documents").insert({
+            owner_id:user.id, sender_id:user.id, uploaded_by:user.id,
+            owner_type:(activeDoc as any).isOrgDoc?"organization":"individual",
+            organization_id:(activeDoc as any).organizationId??null,
+            document_kind:"editor", format:"new", title, content:merged,
+            file_url:"", status:"draft", pages:combined.length,
+          }).select().single();
+          if(error||!nd) throw new Error(error?.message||"insert failed");
+          const item:DocumentItem={ id:nd.id, title, fileUrl:"", format:"new", pages:combined.length };
+          setDocuments(prev=>[item,...prev]);
+          setMerging(false);
+          openDocument(item);
+        }
+      }catch(e:any){
+        setMerging(false);
+        alert("Could not add pages: "+(e?.message||"unknown"));
+      }
+      return;
+    }
+
     try{
       const PDFLib=await loadPdfLib();
       const baseBytes=await activeDocPdfBytes();
@@ -4399,6 +4497,7 @@ export default function DocumentsPage() {
             <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>Manage pages</div>
             <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:14}}>
               Reorder with the arrows, remove pages you don't need, or add more. {pmPages.length} page{pmPages.length!==1?"s":""}.
+              {pmNew && <span style={{display:"block",marginTop:4,color:"var(--accent)"}}>This document stays editable — pages show a text preview.</span>}
             </div>
 
             <div style={{display:"flex",gap:8,marginBottom:12}}>
@@ -4416,8 +4515,10 @@ export default function DocumentsPage() {
               <div style={{overflowY:"auto",flex:1,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:12,padding:"4px 2px"}}>
                 {pmPages.map((pg,idx)=>(
                   <div key={pg.origIndex+"-"+idx} style={{border:"1px solid var(--border)",borderRadius:8,overflow:"hidden",background:"#fff",position:"relative"}}>
-                    <div style={{position:"absolute",top:4,left:4,background:"rgba(0,0,0,.7)",color:"#fff",fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10,fontFamily:"var(--mono)"}}>{idx+1}</div>
-                    <img src={pg.thumb} alt={`Page ${idx+1}`} style={{width:"100%",display:"block",borderBottom:"1px solid var(--border)"}}/>
+                    <div style={{position:"absolute",top:4,left:4,background:"rgba(0,0,0,.7)",color:"#fff",fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10,fontFamily:"var(--mono)",zIndex:1}}>{idx+1}</div>
+                    {pmNew
+                      ? <div style={{height:150,padding:"20px 12px 10px",fontSize:10.5,lineHeight:1.5,color:"#44403c",overflow:"hidden",borderBottom:"1px solid var(--border)",background:"#fff"}}>{pg.preview}</div>
+                      : <img src={pg.thumb} alt={`Page ${idx+1}`} style={{width:"100%",display:"block",borderBottom:"1px solid var(--border)"}}/>}
                     <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:6,padding:"8px 4px",background:"#faf9f8"}}>
                       {(()=>{ const dis=idx===0||pmApplying; return (
                         <button onClick={()=>pmMove(idx,-1)} disabled={dis} title={idx===0?"Already first":"Move earlier"}
