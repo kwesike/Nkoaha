@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase } from "./../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
 
 /* ─── Currency conversion (approximate rates) ─── */
@@ -329,7 +329,7 @@ export default function BillingPage() {
       customizations: {
         title:       "NkoAha",
         description: `${plan.name} Plan`,
-        logo:        "https://nkoaha.space/logo.png",
+        logo:        "https://qxppzivkykmglxjahpnk.supabase.co/storage/v1/object/public/assets/nkoaha-logo.png",
       },
       callback: async (response: any) => {
         const txId = response?.transaction_id || response?.id;

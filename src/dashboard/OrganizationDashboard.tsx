@@ -126,7 +126,7 @@ function AddMemberModal({ organizationId, organizationName, onClose }: AddMember
     // params and landed new users on the login screen — this is the fix.)
     if (found.id === "") {
       const token    = `${organizationId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
-      const origin   = "https://nkoaha.space"; // canonical host (no www)
+      const origin   = "https://app.nkoaha.space"; // the app lives here (nkoaha.space = marketing)
       const joinLink = `${origin}/join-org?invite=${token}&org=${organizationId}&name=${encodeURIComponent(organizationName)}&email=${encodeURIComponent(found.email)}`;
 
       // 1. Record the pending invite (token lets JoinOrg verify it later)

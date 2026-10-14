@@ -223,15 +223,14 @@ export default function OrgMembersPage() {
       setInviteLoading(false); return;
     }
 
-    // ── PATH A: Not registered — send a DIRECT invite email via Resend ──
-    // We build the exact /join-org link and email it ourselves, so the
-    // invite params are never stripped by a Supabase magic-link redirect.
+    // ── PATH A: Not registered — send email invite via magic link ──
     if (foundUser.id === "") {
-      const token  = `${orgId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
-      const origin = "https://nkoaha.space"; // canonical host (no www)
+      const token    = `${orgId.slice(0,8)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+      // Hardcoded origin — the APP lives at app.nkoaha.space (nkoaha.space is the
+      // marketing site). Must match Supabase Auth → Redirect URLs.
+      const origin = "https://app.nkoaha.space";
       const joinLink = `${origin}/join-org?invite=${token}&org=${orgId}&name=${encodeURIComponent(orgName)}&email=${encodeURIComponent(foundUser.email)}`;
 
-      // 1. Record the pending invite (token lets JoinOrg verify it later)
       const { error: invErr } = await supabase.from("organization_invites").insert({
         organization_id: orgId,
         email:           foundUser.email,
@@ -244,18 +243,20 @@ export default function OrgMembersPage() {
         setInviteLoading(false); return;
       }
 
-      // 2. Send our own branded email containing the direct link
-      const inviterName = user.email?.split("@")[0];
-      const { data: sendRes, error: sendErr } = await supabase.functions.invoke("send-org-invite", {
-        body: { to: foundUser.email, orgName, joinLink, inviterName },
+      const { error: emailErr } = await supabase.auth.signInWithOtp({
+        email: foundUser.email,
+        options: {
+          emailRedirectTo: joinLink,
+          shouldCreateUser: true,
+          data: { org_name: orgName, invite_token: token },
+        },
       });
-      if (sendErr || (sendRes as any)?.error) {
-        const detail = (sendRes as any)?.detail || (sendRes as any)?.error || sendErr?.message || "Unknown error";
-        setInviteMsg({ type:"error", msg:"Invite saved, but the email failed to send: " + detail });
-        setInviteLoading(false); load(); return;
+      if (emailErr) {
+        setInviteMsg({ type:"error", msg:"Failed to send email: " + emailErr.message });
+        setInviteLoading(false); return;
       }
 
-      setInviteMsg({ type:"success", msg:`📧 Email invite sent to ${foundUser.email}. They'll get a link to join ${orgName}.` });
+      setInviteMsg({ type:"success", msg:`📧 Email invite sent to ${foundUser.email}. They will receive a signup link.` });
       setFoundUser(null); setInviteEmail("");
       setInviteLoading(false);
       load(); return;
