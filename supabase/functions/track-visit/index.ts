@@ -77,9 +77,12 @@ serve(async (req) => {
     };
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-    await supabase.from("website_events").insert(row);
+    const { error } = await supabase.from("website_events").insert(row);
+    if (error) console.error("[track-visit] insert failed:", error.message);
 
-    return new Response(JSON.stringify({ ok: true }), {
+    // Surface the DB error (if any) so failures are diagnosable — the beacon
+    // ignores the response, but a manual curl test will show it.
+    return new Response(JSON.stringify({ ok: !error, error: error?.message || null }), {
       status: 200, headers: { ...cors, "Content-Type": "application/json" },
     });
   } catch (_e) {
