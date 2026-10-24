@@ -107,6 +107,7 @@ export default function DrivePage() {
   const [role, setRole]         = useState<string>("individual");
   const [myUserId, setMyUserId] = useState<string>("");
   const [usage, setUsage]       = useState<{ used: number; limit: number; scope: string } | null>(null);
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set()); // over-storage-limit, read-gated
 
   const [menuFor, setMenuFor]   = useState<string | null>(null);
   const [showNewFolder, setShowNewFolder] = useState(false);
@@ -244,6 +245,10 @@ export default function DrivePage() {
 
   // Route to the document page (role-specific) and tell it which document to open.
   async function openDriveDocument(item: DriveItem) {
+    if (lockedIds.has(item.id)) {
+      setMsg({ type: "error", text: "This file is over your current storage limit. Renew or upgrade your plan in Billing to access it again — it's safe and untouched." });
+      return;
+    }
     if (!item.document_id) {
       setMsg({ type: "error", text: "This file isn't linked to an editable document. Re-upload it to the Drive." });
       return;
@@ -289,6 +294,11 @@ export default function DrivePage() {
     if (!error && data && data[0]) {
       setUsage({ used: Number(data[0].used_bytes), limit: Number(data[0].limit_bytes), scope: data[0].scope });
     }
+    // Which files are locked because the drive is over its storage limit?
+    const { data: locked } = await supabase.rpc("drive_locked_item_ids");
+    setLockedIds(new Set((locked || []).map((r: any) =>
+      typeof r === "string" ? r : (r.id ?? r.drive_locked_item_ids ?? Object.values(r)[0])
+    ).filter(Boolean)));
   }, []);
 
   async function loadItems(parentId: string | null) {
@@ -498,6 +508,10 @@ export default function DrivePage() {
   }
 
   async function downloadFile(item: DriveItem) {
+    if (lockedIds.has(item.id)) {
+      setMsg({ type: "error", text: "This file is locked because you're over your storage limit. Renew or upgrade in Billing to download it." });
+      return;
+    }
     setMsg({ type: "info", text: "Preparing download…" });
     const url = await resolveDownloadUrl(item);
     if (!url) {
@@ -841,6 +855,12 @@ export default function DrivePage() {
           )}
         </div>
 
+        {usage && usage.used > usage.limit && (
+          <div style={{ marginBottom: 20, fontSize: 12.5, color: "#b45309", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 14px", lineHeight: 1.5 }}>
+            You're over your {fmtBytes(usage.limit)} limit. Your newest files (marked 🔒) are locked but completely safe — renew or upgrade your plan in Billing to unlock them. Nothing has been deleted.
+          </div>
+        )}
+
         {/* Breadcrumbs */}
         <div className="dr-crumbs">
           {crumbs.map((c, i) => (
@@ -871,9 +891,13 @@ export default function DrivePage() {
           <div className="dr-grid">
             {items.map(item => {
               const ic = item.kind === "folder" ? { emoji: "📁", color: "#7c3aed" } : fileIcon(item.name, item.mime_type);
+              const locked = item.kind === "file" && lockedIds.has(item.id);
               return (
-                <div key={item.id} className="dr-card"
-                  onClick={() => item.kind === "folder" ? openFolder(item) : openDriveDocument(item)}>
+                <div key={item.id} className="dr-card" style={locked ? { opacity: 0.55 } : undefined}
+                  onClick={() => locked
+                    ? setMsg({ type: "error", text: "Locked — over your storage limit. Renew or upgrade in Billing to access it." })
+                    : (item.kind === "folder" ? openFolder(item) : openDriveDocument(item))}>
+                  {locked && <div style={{ position: "absolute", top: 6, left: 6, fontSize: 14 }} title="Over storage limit — renew to access">🔒</div>}
                   <button className="dr-card-menu" onClick={e => { e.stopPropagation(); setMenuFor(menuFor === item.id ? null : item.id); }}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
                   </button>
@@ -907,7 +931,8 @@ export default function DrivePage() {
                   <div className="dr-card-icon" style={{ fontSize: 38 }}>{item.is_member_root ? "👤" : ic.emoji}</div>
                   <div className="dr-card-name">{item.name}</div>
                   <div className="dr-card-sub">
-                    {(item as any).__shared
+                    {locked ? "🔒 Locked · over limit"
+                      : (item as any).__shared
                       ? `Shared · ${(item as any).__access === "edit" ? "can edit" : "view only"}`
                       : item.is_member_root ? "Member folder" : item.kind === "folder" ? "Folder" : fmtBytes(item.size_bytes)}
                   </div>
