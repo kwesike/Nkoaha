@@ -45,6 +45,7 @@ const SupportInboxPage             = lazy(() => import("./dashboard/support/Supp
 const AdminTeamPage               = lazy(() => import("./admin/AdminTeamPage"));
 const AdminSettingsPage           = lazy(() => import("./admin/AdminSettingsPage"));
 const AdminNotificationPage       = lazy(() => import("./admin/AdminNotificationPage"));
+const AdminWebsitePage                = lazy(() => import("./admin/AdminWebsitePage"));
 
 function PageLoader() {
   return (
@@ -122,6 +123,7 @@ function App() {
           <Route path="/dashboard/admin/team"            element={<AdminTeamPage />} />
           <Route path="/dashboard/admin/settings"        element={<AdminSettingsPage />} />
           <Route path="/dashboard/admin/notifications"   element={<AdminNotificationPage />} />
+          <Route path="/dashboard/admin/website"         element={<AdminWebsitePage />} />
           {/* ── ORGANIZATION ── */}
           <Route path="/dashboard/organizationdashboard" element={
             <ProtectedRoute><OrganizationDashboard /></ProtectedRoute>

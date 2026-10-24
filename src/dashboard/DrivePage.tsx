@@ -215,6 +215,18 @@ export default function DrivePage() {
     // Exclude the org owner — the owner is not a "member" with their own folder.
     const { data: orgRow } = await supabase.from("organizations").select("owner_id").eq("id", orgId).maybeSingle();
     if (orgRow?.owner_id) ids.delete(orgRow.owner_id);
+
+    // Clean up: delete member-root folders for people who are NO LONGER in the
+    // org (parent_id cascade removes their contents too), so the org drive only
+    // ever shows CURRENT members. Relies on removal clearing BOTH
+    // profiles.organization_id and organization_members.
+    const { data: allRoots } = await supabase.from("drive_items")
+      .select("id,member_id").eq("org_id", orgId).eq("is_member_root", true);
+    const staleIds = (allRoots || [])
+      .filter((r: any) => r.member_id && !ids.has(r.member_id))
+      .map((r: any) => r.id);
+    if (staleIds.length) await supabase.from("drive_items").delete().in("id", staleIds);
+
     if (!ids.size) return;
     // Which members already have a member-root folder?
     const { data: existing } = await supabase.from("drive_items")

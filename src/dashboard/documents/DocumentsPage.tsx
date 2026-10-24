@@ -589,6 +589,11 @@ async function convertDocxToPdfViaEdge(
 export default function DocumentsPage() {
   const [documents, setDocuments]     = useState<DocumentItem[]>([]);
   const [activeDoc, setActiveDoc]     = useState<DocumentItem|null>(null);
+  // Document lifecycle status: "draft" | "sent" | "signed" | ... — controls
+  // whether the TEXT/header/footer can be edited. Only a "draft" is editable;
+  // once a doc is sent for signature the body is frozen (integrity) and
+  // recipients may only ADD their own overlay at their step.
+  const [docStatus, setDocStatus]     = useState<string>("draft");
   // Organisation Documents (read-only) — populated for org owners only
   const [orgDocs, setOrgDocs]         = useState<any[]>([]);
   const [isOrgOwner, setIsOrgOwner]   = useState(false);
@@ -896,11 +901,13 @@ export default function DocumentsPage() {
     pdfCanvasRefs.current=[];docxPdfCanvasRefs.current=[];
 
     const{data,error}=await supabase.from("documents")
-      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready,owner_id")
+      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready,owner_id,status")
       .eq("id",doc.id).single();
     if(error){console.error(error);setLoading(false);return;}
 
     setActiveDoc(doc);
+    // Only a draft is body-editable; a sent/signed doc is frozen (recipients add overlays only).
+    setDocStatus((data as any)?.status||"draft");
     setDocTitle(data?.title??doc.title);
     setHeader(data?.header||"");
     setFooter(data?.footer||"");
@@ -1019,6 +1026,7 @@ export default function DocumentsPage() {
 
     // Mark active doc as a read-only org doc
     setActiveDoc({...doc,isOrgDoc:true} as any);
+    setDocStatus((data as any)?.status||"sent"); // org view is never a live draft
     setDocTitle(data?.title??doc.title);
     setHeader(data?.header||"");setFooter(data?.footer||"");
     setCurrentPage(1);setSaveStatus("saved");
@@ -2554,7 +2562,15 @@ export default function DocumentsPage() {
   useEffect(()=>{
     if(!activeDoc||saveStatus!=="unsaved")return;
     if((activeDoc as any).isOrgDoc)return; // org docs are read-only — never save
-    if(activeDoc.format==="new"){autosave(activeDoc.id,editorPages,docTitle,header,footer,newDocOverlays);}
+    if(activeDoc.format==="new"){
+      if(docStatus==="draft"){
+        autosave(activeDoc.id,editorPages,docTitle,header,footer,newDocOverlays);
+      }else{
+        // Body is frozen once the doc leaves draft — persist ONLY this signer's
+        // overlays, never the content/title/header/footer (DB trigger enforces this).
+        supabase.from("documents").update({annotations:JSON.stringify({newDocOverlays})}).eq("id",activeDoc.id).then(()=>setSaveStatus("saved"));
+      }
+    }
     else if(activeDoc.format==="docx"){
       supabase.from("documents").update({
         content:{format:"docx-html-edited",pages:docxHtmlPages,overlays:docxOverlays},
@@ -2689,6 +2705,28 @@ export default function DocumentsPage() {
     if(!activeDoc||selectedRoute.length===0)return;
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
     const totalSteps=selectedRoute.length;
+
+    // ── Editable (AI / "new") docs: freeze to a PDF before routing, so the
+    //    multi-party signing uses the tamperproof PDF overlay flow (fixed page
+    //    image + step-locked overlays). Done while the doc is still 'draft', so
+    //    the body-freeze trigger permits changing format/file_url. ──
+    if(activeDoc.format==="new"){
+      const b64=await bakePagesToPdfBase64();
+      if(!b64){ alert("Could not prepare the document for signing. Please try again."); return; }
+      const bin=atob(b64); const bytes=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      const pdfPath=`docs/routed_${activeDoc.id}_${Date.now()}.pdf`;
+      const{error:upErr}=await supabase.storage.from("documents")
+        .upload(pdfPath,new Blob([bytes],{type:"application/pdf"}),{contentType:"application/pdf",upsert:true});
+      if(upErr){ alert("Could not upload the signing copy: "+upErr.message); return; }
+      // Carry any pre-placed overlays onto the PDF (same %-coordinate system).
+      const upd:any={ format:"pdf", file_url:pdfPath, pdf_url:pdfPath, pdf_ready:true };
+      if(newDocOverlays.length) upd.annotations=JSON.stringify({pdfOverlays:newDocOverlays});
+      const{error:updErr}=await supabase.from("documents").update(upd).eq("id",activeDoc.id);
+      if(updErr){ alert("Could not finalise the document for routing: "+updErr.message); return; }
+      // Reflect locally so the rest of the flow + UI treat it as a PDF.
+      setActiveDoc(prev=>prev?({...prev,format:"pdf",fileUrl:pdfPath,pdfUrl:pdfPath,pdfReady:true} as any):prev);
+    }
 
     // Insert ALL route steps — but only activate step 1 initially
     for(let i=0;i<totalSteps;i++){
@@ -2827,9 +2865,8 @@ export default function DocumentsPage() {
         content:{format:"docx-html-edited",pages:docxHtmlPages,overlays:docxOverlays},
       }).eq("id",activeDoc.id);
     } else if(activeDoc.format==="new"){
-      const merged={type:"doc",content:editorPages.flatMap((p:any)=>p.content||[])};
+      // Body frozen after draft — append ONLY this signer's overlays (no content rewrite).
       await supabase.from("documents").update({
-        content:merged,
         annotations:JSON.stringify({newDocOverlays}),
       }).eq("id",activeDoc.id);
     }
@@ -2913,9 +2950,9 @@ export default function DocumentsPage() {
         content:{format:"docx-html-edited",pages:docxHtmlPages,overlays:docxOverlays},status:"signed",
       }).eq("id",activeDoc.id);
     } else {
-      const merged={type:"doc",content:editorPages.flatMap((p:any)=>p.content||[])};
+      // Body frozen after draft — write ONLY overlays + status (no content rewrite).
       await supabase.from("documents").update({
-        content:merged,annotations:JSON.stringify({newDocOverlays}),status:"signed",
+        annotations:JSON.stringify({newDocOverlays}),status:"signed",
       }).eq("id",activeDoc.id);
     }
 
@@ -3631,11 +3668,15 @@ export default function DocumentsPage() {
     const sigUrl=await resolveStorageUrl(prof.signature_url);
     if(!sigUrl){alert("Could not load signature. Please check your Settings.");return;}
     if(activeDoc?.format==="new"){
-      // Editable docs are reflowing text — a free-positioned signature overlay
-      // can't stay in the same spot once the content reflows for print/export.
-      // Guide the user to sign the FIXED version instead, where it works perfectly.
+      // Place the signature as a draggable overlay on the current page — the same
+      // mechanism as image overlays. Print/export and the sign flow already merge
+      // newDocOverlays (positioned by %), so it locks in place on the output.
+      const pageIdx=Math.max(0,Math.min((currentPage||1)-1,editorPages.length-1));
+      const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const overlay:PdfOverlay={id:newId,pageIdx,x:25,y:75,type:"signature",content:sigUrl,fontSize:16,step:myRoute?.route_order??0};
+      setNewDocOverlays(prev=>[...prev,overlay]);
+      setSaveStatus("unsaved");
       setContextPos(null);
-      setShowSignGuide(true);
       return;
     }
     if(activeDoc?.format==="docx"){
@@ -3781,7 +3822,7 @@ export default function DocumentsPage() {
           )}
           {activeDoc?(
             <>
-              <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled" readOnly={(activeDoc as any).isOrgDoc}/>
+              <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled" readOnly={(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
               {!(activeDoc as any).isOrgDoc && <span className={`dp-save-badge ${saveStatus}`}>{saveStatus==="saved"?"● Saved":saveStatus==="saving"?"⟳ Saving…":"● Unsaved"}</span>}
               {activeDoc.format!=="new"&&<span style={{fontSize:10,fontFamily:"var(--mono)",background:"var(--accent-light)",color:"var(--accent)",padding:"2px 8px",borderRadius:20}}>{activeDoc.format.toUpperCase()}</span>}
               {/* ── Organisation Document: READ-ONLY (Download + Print only) ── */}
@@ -4010,7 +4051,7 @@ export default function DocumentsPage() {
                   {i>0&&<div className="dp-page-gap">Page {i+1}</div>}
                   <div className="dp-page-card">
                     <div className="dp-hf-bar">
-                      <input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0}/>
+                      <input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0||(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
                       <span className="dp-hf-pagenum">{i+1} / {totalPages}</span>
                     </div>
                     <div className="dp-pdf-stage" style={{cursor:pdfTool!=="none"?"crosshair":"default"}}
@@ -4176,7 +4217,7 @@ export default function DocumentsPage() {
                       ))}
                     </div>
                     <div className="dp-hf-bar footer">
-                      <input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0}/>
+                      <input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0||(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
                     </div>
                   </div>
                 </div>
@@ -4219,7 +4260,7 @@ export default function DocumentsPage() {
                     {i>0&&<div className="dp-page-gap">Page {i+1}</div>}
                     <div className="dp-page-card">
                       <div className="dp-hf-bar">
-                        <input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0}/>
+                        <input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0||(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
                         <span className="dp-hf-pagenum">{i+1} / {docxPdfDoc.numPages}</span>
                       </div>
                       <div className="dp-pdf-stage" style={{cursor:docxTool!=="none"?"crosshair":"default"}}
@@ -4370,7 +4411,7 @@ export default function DocumentsPage() {
                         ))}
                       </div>
                       <div className="dp-hf-bar footer">
-                        <input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0}/>
+                        <input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0||(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
                       </div>
                     </div>
                   </div>
@@ -4403,21 +4444,22 @@ export default function DocumentsPage() {
                   {i>0&&<div className="dp-page-gap">Page {i+1}</div>}
                   <div className="dp-page-card">
                     <div className="dp-hf-bar">
-                      <input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0}/>
+                      <input className="dp-hf-input" value={header} onChange={e=>setHeader(e.target.value)} placeholder={i===0?"Add header…":""} readOnly={i>0||(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
                       <span className="dp-hf-pagenum">{i+1} / {totalPages}</span>
                     </div>
                     <div className="dp-page-body" style={{position:"relative"}}>
                       <DocumentEditor
                         key={`${activeDoc.id}-p${i}`}
-                        content={pageContent} editable={!(activeDoc as any).isOrgDoc}
-                        onUpdate={c=>{if((activeDoc as any).isOrgDoc)return;setEditorPages(prev=>{const u=[...prev];u[i]=c;return u;});setSaveStatus("unsaved");}}
+                        content={pageContent} editable={!(activeDoc as any).isOrgDoc && docStatus==="draft"}
+                        onUpdate={c=>{if((activeDoc as any).isOrgDoc||docStatus!=="draft")return;setEditorPages(prev=>{const u=[...prev];u[i]=c;return u;});setSaveStatus("unsaved");}}
                         onInsertDate={handleInsertDate} onInsertSignature={handleInsertSig} onInsertImage={handleInsertImg}
                       />
                       {/* Image overlays for new docs — draggable/resizable like PDF overlays */}
                       {newDocOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                        <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:(activeDoc as any).isOrgDoc?"default":"move",userSelect:"none",zIndex:10}}
+                        <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:isLocked(ov)?"default":"move",userSelect:"none",zIndex:10}}
+                          title={isLocked(ov)?"Placed by a previous recipient — cannot be moved or removed":""}
                           onMouseDown={e=>{
-                            if((activeDoc as any).isOrgDoc)return; // org read-only — no drag
+                            if(isLocked(ov))return; // locked: org view OR placed by an earlier signer
                             e.stopPropagation();
                             const startX=e.clientX,startY=e.clientY;
                             const startOx=ov.x,startOy=ov.y;
@@ -4436,8 +4478,8 @@ export default function DocumentsPage() {
                             document.addEventListener("mousemove",onMove);
                             document.addEventListener("mouseup",onUp);
                           }}>
-                          {/* Resize controls — always visible so they're easy to use */}
-                          {!(activeDoc as any).isOrgDoc && <div style={{position:"absolute",top:-24,left:0,display:"flex",alignItems:"center",gap:4,background:"rgba(0,0,0,0.8)",borderRadius:4,padding:"3px 7px",zIndex:12,opacity:1}}
+                          {/* Resize/delete controls — hidden on locked overlays (prior signers' marks) */}
+                          {!isLocked(ov) && <div style={{position:"absolute",top:-24,left:0,display:"flex",alignItems:"center",gap:4,background:"rgba(0,0,0,0.8)",borderRadius:4,padding:"3px 7px",zIndex:12,opacity:1}}
                             className="nd-img-ctrl">
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||20)+8)}:o));setSaveStatus("unsaved");}}
                               style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 2px"}}>+</button>
@@ -4455,7 +4497,7 @@ export default function DocumentsPage() {
                       ))}
                     </div>
                     <div className="dp-hf-bar footer">
-                      <input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0}/>
+                      <input className="dp-hf-input" value={footer} onChange={e=>setFooter(e.target.value)} placeholder={i===0?"Add footer…":""} readOnly={i>0||(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
                     </div>
                   </div>
                 </div>

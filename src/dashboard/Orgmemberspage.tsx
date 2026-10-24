@@ -164,7 +164,14 @@ export default function OrgMembersPage() {
         alert("Could not remove this member. The change was blocked by a permissions policy. Please run the latest remove-member SQL fix, then try again.");
         return;
       }
-      // Step 2: delete any invite row so they don't reappear as "pending"
+      // Step 2: remove the organization_members row too (membership is tracked
+      // in BOTH profiles.organization_id and organization_members — clearing
+      // only one leaves them appearing as a current member in the org drive).
+      await supabase.from("organization_members")
+        .delete()
+        .eq("organization_id", orgId)
+        .eq("user_id", m.id);
+      // Step 3: delete any invite row so they don't reappear as "pending"
       await supabase.from("organization_invites")
         .delete()
         .eq("organization_id", orgId)
