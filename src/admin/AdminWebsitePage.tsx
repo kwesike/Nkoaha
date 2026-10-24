@@ -27,7 +27,7 @@ const STYLES = `
   .aw-card h3{font-size:13px;font-weight:700;margin:0 0 14px;color:#1c1917}
   .aw-chart{display:flex;align-items:flex-end;gap:4px;height:160px}
   .aw-barcol{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}
-  .aw-bar{width:100%;max-width:26px;background:linear-gradient(180deg,#a78bfa,#7c3aed);border-radius:4px 4px 0 0;transition:height .3s}
+  .aw-cbar{width:100%;max-width:26px;background:linear-gradient(180deg,#a78bfa,#7c3aed);border-radius:4px 4px 0 0;transition:height .3s}
   .aw-bar-lbl{font-size:9px;color:#a8a29e;white-space:nowrap;font-family:'DM Mono',monospace}
   .aw-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #faf6f0;font-size:12.5px}
   .aw-row:last-child{border-bottom:none}
@@ -157,7 +157,7 @@ export default function AdminWebsitePage() {
                 <div className="aw-chart">
                   {agg.series.map(([day, n]) => (
                     <div className="aw-barcol" key={day} title={`${day}: ${n}`}>
-                      <div className="aw-bar" style={{ height: `${Math.round((n / agg.maxDay) * 130)}px` }} />
+                      <div className="aw-cbar" style={{ height: `${Math.round((n / agg.maxDay) * 130)}px` }} />
                       <span className="aw-bar-lbl">{day.slice(5)}</span>
                     </div>
                   ))}
