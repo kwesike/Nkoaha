@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { supabase } from "../../lib/supabase";
 import { logSecurityEvent } from "../../lib/securityLog";
+import { removeWhiteBackground } from "../../lib/removeBackground";
 import type { JSONContent } from "@tiptap/react";
 import debounce from "lodash.debounce";
 import DocumentEditor from "./DocumentEditor";
@@ -3433,7 +3434,7 @@ export default function DocumentsPage() {
         const htmlDocx=await loadHtmlDocx();
         if(!htmlDocx?.asBlob){ alert("Word export library couldn't load. Try PDF instead."); return; }
         const sigBlock = newDocOverlays.length
-          ? `<hr/><p><strong>Signatures / attachments:</strong></p>${newDocOverlays.map(ov=>`<img src="${ov.content}" style="max-width:240px"/>`).join("<br/>")}`
+          ? `<hr/><p><strong>Signatures / attachments:</strong></p>${newDocOverlays.map(ov=> (ov.type==="date"||ov.type==="text") ? `<span>${(ov.content||"").replace(/</g,"&lt;")}</span>` : `<img src="${ov.content}" style="max-width:240px"/>`).join("<br/>")}`
           : "";
         const fullHtml=`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:'Times New Roman',serif;font-size:12pt;line-height:1.6;">${html}${sigBlock}</body></html>`;
         const blob=htmlDocx.asBlob(fullHtml);
@@ -3465,7 +3466,9 @@ export default function DocumentsPage() {
 
     // Build overlay HTML (signatures/images) for new docs, positioned by %.
     const overlaysHtml = isNew
-      ? newDocOverlays.map(ov=>`<img src="${ov.content}" crossorigin="anonymous" style="position:absolute;left:${ov.x}%;top:${ov.y}%;width:${(ov.fontSize||20)*10}px;max-width:70%;object-fit:contain;"/>`).join("")
+      ? newDocOverlays.map(ov=> (ov.type==="date"||ov.type==="text")
+          ? `<span style="position:absolute;left:${ov.x}%;top:${ov.y}%;font-size:${ov.fontSize||16}px;color:#1c1917;white-space:nowrap;">${(ov.content||"").replace(/</g,"&lt;")}</span>`
+          : `<img src="${ov.content}" crossorigin="anonymous" style="position:absolute;left:${ov.x}%;top:${ov.y}%;width:${(ov.fontSize||20)*10}px;max-width:70%;object-fit:contain;"/>`).join("")
       : "";
 
     const bodyHtml = isNew
@@ -3647,50 +3650,59 @@ export default function DocumentsPage() {
 
   const handleRightClick=(e:React.MouseEvent)=>{e.preventDefault();if(!activeDoc)return;if((activeDoc as any).isOrgDoc)return;setContextPos({x:e.clientX,y:e.clientY});};
 
-  // FIX 5: insertDate handles all doc types
-  const insertDate=()=>{
-    const dateStr=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
-    if(insertDateRef.current){
-      insertDateRef.current(dateStr);
+  // Place a context-menu overlay on the current page for ANY doc format.
+  // (Right-click → Insert works on PDF, DOCX and editable "new" docs alike.)
+  const placeContextOverlay=(partial:Partial<PdfOverlay>)=>{
+    const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const ov:PdfOverlay={ id:newId, pageIdx:0, x:25, y:55, type:"text", content:"", fontSize:16, step:myRoute?.route_order??0, ...partial } as PdfOverlay;
+    if(activeDoc?.format==="pdf"){
+      ov.pageIdx=Math.max(0,Math.min((currentPage||1)-1,(totalPages||1)-1));
+      setPdfOverlays(prev=>[...prev,ov]);
     }else if(activeDoc?.format==="docx"){
-      document.querySelectorAll<HTMLIFrameElement>(".dp-docx-iframe").forEach(iframe=>{
-        iframe.contentDocument?.execCommand("insertText",false,dateStr);
-      });
+      ov.pageIdx=Math.max(0,Math.min((currentPage||1)-1,Math.max(0,docxHtmlPages.length-1)));
+      setDocxOverlays(prev=>[...prev,ov]);
+    }else{
+      ov.pageIdx=Math.max(0,Math.min((currentPage||1)-1,Math.max(0,editorPages.length-1)));
+      setNewDocOverlays(prev=>[...prev,ov]);
     }
+    setSaveStatus("unsaved");
     setContextPos(null);
   };
 
-  // FIX 6: insertSignature resolves URL and handles all doc types
-  const insertSignature=async()=>{
-    const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
-    const{data:prof}=await supabase.from("profiles").select("signature_url").eq("id",user.id).single();
-    if(!prof?.signature_url){alert("No signature uploaded yet. Please upload your signature in Settings.");return;}
-    const sigUrl=await resolveStorageUrl(prof.signature_url);
-    if(!sigUrl){alert("Could not load signature. Please check your Settings.");return;}
-    if(activeDoc?.format==="new"){
-      // Place the signature as a draggable overlay on the current page — the same
-      // mechanism as image overlays. Print/export and the sign flow already merge
-      // newDocOverlays (positioned by %), so it locks in place on the output.
-      const pageIdx=Math.max(0,Math.min((currentPage||1)-1,editorPages.length-1));
-      const newId=`${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const overlay:PdfOverlay={id:newId,pageIdx,x:25,y:75,type:"signature",content:sigUrl,fontSize:16,step:myRoute?.route_order??0};
-      setNewDocOverlays(prev=>[...prev,overlay]);
+  // Right-click an image/signature overlay → remove its (white) background.
+  const removeOverlayBackground = async (ov: PdfOverlay, which: "pdf"|"docx"|"new") => {
+    if (ov.type!=="image" && ov.type!=="signature") return;
+    if (isLocked(ov)) return;
+    if (!confirm("Remove the background from this image?")) return;
+    try {
+      const blob = await removeWhiteBackground(ov.content);
+      const path = `docs/nobg_${ov.id}_${Date.now()}.png`;
+      const { error } = await supabase.storage.from("documents").upload(path, blob, { contentType:"image/png", upsert:true });
+      if (error) { alert("Could not save the image: "+error.message); return; }
+      const signed = await supabase.storage.from("documents").createSignedUrl(path, 3600);
+      const newUrl = signed.data?.signedUrl || ov.content;
+      const upd = (arr: PdfOverlay[]) => arr.map(o => o.id===ov.id ? { ...o, content:newUrl } : o);
+      if (which==="pdf") setPdfOverlays(upd);
+      else if (which==="docx") setDocxOverlays(upd);
+      else setNewDocOverlays(upd);
       setSaveStatus("unsaved");
-      setContextPos(null);
-      return;
+    } catch {
+      alert("Could not remove the background. This works best on images with a plain, light background.");
     }
-    if(activeDoc?.format==="docx"){
-      // DOCX iframe
-      document.querySelectorAll<HTMLIFrameElement>(".dp-docx-iframe").forEach(iframe=>{
-        const doc=iframe.contentDocument;
-        if(doc){
-          const img=doc.createElement("img");
-          img.src=sigUrl;img.style.cssText="height:48px;vertical-align:middle;margin:0 4px;display:inline-block;";
-          doc.execCommand("insertHTML",false,img.outerHTML);
-        }
-      });
-    }
-    setContextPos(null);
+  };
+
+  const insertDate=()=>{
+    const dateStr=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+    placeContextOverlay({type:"date",content:dateStr,fontSize:16});
+  };
+
+  const insertSignature=async()=>{
+    const{data:{user}}=await supabase.auth.getUser(); if(!user){setContextPos(null);return;}
+    const{data:prof}=await supabase.from("profiles").select("signature_url").eq("id",user.id).single();
+    if(!prof?.signature_url){alert("No signature uploaded yet. Please upload your signature in Settings.");setContextPos(null);return;}
+    const sigUrl=await resolveStorageUrl(prof.signature_url);
+    if(!sigUrl){alert("Could not load signature. Please check your Settings.");setContextPos(null);return;}
+    placeContextOverlay({type:"signature",content:sigUrl,fontSize:16});
   };
 
   const handleInsertDate=useCallback((fn:(d:string)=>void)=>{insertDateRef.current=fn;},[]);
@@ -4096,6 +4108,7 @@ export default function DocumentsPage() {
                       <canvas ref={el=>{pdfCanvasRefs.current[i]=el;}} className="dp-pdf-canvas"/>
                       {pdfOverlays.filter(o=>o.pageIdx===i).map(ov=>(
                         <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
+                          onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"pdf");}}}
                           onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                           onWheel={e=>{
                             e.stopPropagation();
@@ -4298,7 +4311,8 @@ export default function DocumentsPage() {
                         <canvas ref={el=>{docxPdfCanvasRefs.current[i]=el;}} style={{display:"block",maxWidth:"100%"}}/>
                         {docxOverlays.filter(o=>o.pageIdx===i).map(ov=>(
                           <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
-                            onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
+                            onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"docx");}}}
+                          onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                             onWheel={e=>{
                               e.stopPropagation();
                               if(isLocked(ov))return;
@@ -4457,6 +4471,7 @@ export default function DocumentsPage() {
                       {/* Image overlays for new docs — draggable/resizable like PDF overlays */}
                       {newDocOverlays.filter(o=>o.pageIdx===i).map(ov=>(
                         <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:isLocked(ov)?"default":"move",userSelect:"none",zIndex:10}}
+                          onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"new");}}}
                           title={isLocked(ov)?"Placed by a previous recipient — cannot be moved or removed":""}
                           onMouseDown={e=>{
                             if(isLocked(ov))return; // locked: org view OR placed by an earlier signer
@@ -4489,10 +4504,14 @@ export default function DocumentsPage() {
                             <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}
                               style={{background:"#ef4444",border:"none",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",padding:"0 3px",borderRadius:3,marginLeft:2}}>×</button>
                           </div>}
-                          <img src={ov.content} alt="attachment" crossOrigin="anonymous"
-                            style={{width:(ov.fontSize||20)*10,maxWidth:700,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:4,border:"2px solid rgba(124,58,237,0.3)"}}
-                            onError={e=>{(e.target as HTMLImageElement).style.display="none";}}
-                          />
+                          {(ov.type==="date"||ov.type==="text")?(
+                            <span style={{display:"inline-block",fontSize:(ov.fontSize||16),color:"#1c1917",whiteSpace:"nowrap",padding:"2px 6px",borderRadius:4,background:"rgba(255,255,255,0.92)",border:"1px dashed rgba(124,58,237,0.4)"}}>{ov.content}</span>
+                          ):(
+                            <img src={ov.content} alt="attachment" crossOrigin="anonymous"
+                              style={{width:(ov.fontSize||20)*10,maxWidth:700,display:"block",objectFit:"contain",pointerEvents:"none",borderRadius:4,border:"2px solid rgba(124,58,237,0.3)"}}
+                              onError={e=>{(e.target as HTMLImageElement).style.display="none";}}
+                            />
+                          )}
                         </div>
                       ))}
                     </div>

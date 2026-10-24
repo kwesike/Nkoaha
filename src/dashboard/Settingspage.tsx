@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { subscribeToPush, unsubscribeFromPush, isPushSubscribed } from "../hooks/usePushNotifications";
-import { supabase } from ".././lib/supabase";
+import { supabase } from "./../lib/supabase";
+import { removeWhiteBackground } from "./../lib/removeBackground";
 import DashboardLayout from "./layout/DashboardLayout";
 
 const STYLES = `
@@ -249,9 +250,11 @@ export default function SettingsPage() {
     if (!file.type.startsWith("image/")) { showMsg("error","Please select an image file.","sig"); return; }
     setUploading("sig");
     const { data: { user } } = await supabase.auth.getUser(); if (!user) return;
-    const ext = file.name.split(".").pop();
-    const path = `avatars/${user.id}/signature.${ext}`;
-    const { error: upErr } = await supabase.storage.from("avatars").upload(path, file, { upsert:true, contentType:file.type });
+    // Auto-remove the (white) background so the signature is transparent.
+    let sigBlob: Blob = file;
+    try { sigBlob = await removeWhiteBackground(file); } catch { sigBlob = file; }
+    const path = `avatars/${user.id}/signature.png`;
+    const { error: upErr } = await supabase.storage.from("avatars").upload(path, sigBlob, { upsert:true, contentType:"image/png" });
     if (upErr) { showMsg("error", upErr.message, "sig"); setUploading(null); return; }
     const url = supabase.storage.from("avatars").getPublicUrl(path).data.publicUrl;
     // Duplicate signature check
