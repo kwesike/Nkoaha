@@ -1,17 +1,15 @@
 // src/lib/removeBackground.ts
-// Client-side background knock-out: turns a near-white, low-saturation
-// background into transparency. Ideal for signatures, stamps, logos and
-// simple images on a light/plain background — runs instantly in the browser,
-// no external service or API key. (For complex photos with busy backgrounds,
-// a dedicated ML service would be needed; this targets plain backgrounds.)
+// Client-side background knock-out to transparency. It samples the IMAGE
+// CORNERS to detect the actual background colour (white, cream, light grey, a
+// scanned page tint…) and removes pixels close to it, with a feathered edge.
+// Ideal for signatures, stamps and logos on a plain background — instant, in
+// the browser, no API key. Busy photo backgrounds need a dedicated ML service.
 
 export interface RemoveBgOptions {
-  /** Min RGB channel value treated as "white" background (0–255). Higher = stricter. */
-  threshold?: number;
-  /** Feather range below threshold for soft edges. */
-  softness?: number;
-  /** Max colour spread (max-min channel) still considered greyscale/background. */
-  maxSaturation?: number;
+  /** Colour distance (0–441) within which a pixel counts as background. */
+  tolerance?: number;
+  /** Extra distance beyond tolerance over which alpha fades to 0 (soft edge). */
+  feather?: number;
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -19,24 +17,30 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Could not load the image (it may be cross-origin without CORS)."));
+    img.onerror = () => reject(new Error("Could not load the image."));
     img.src = src;
   });
 }
 
-/**
- * Returns a PNG Blob (with alpha) where the near-white background is transparent.
- * Accepts a File/Blob (e.g. a freshly selected signature) or an image URL.
- */
+// Fetch a URL to a blob so we can load it from a same-origin object URL — this
+// avoids the canvas being "tainted" (which would block reading its pixels).
+async function toObjectUrl(input: Blob | string): Promise<{ url: string; revoke: boolean }> {
+  if (typeof input !== "string") return { url: URL.createObjectURL(input), revoke: true };
+  try {
+    const res = await fetch(input, { mode: "cors" });
+    if (res.ok) { const b = await res.blob(); return { url: URL.createObjectURL(b), revoke: true }; }
+  } catch { /* fall back to direct URL below */ }
+  return { url: input, revoke: false };
+}
+
 export async function removeWhiteBackground(
   input: Blob | string,
   opts: RemoveBgOptions = {}
 ): Promise<Blob> {
-  const threshold     = opts.threshold ?? 232;
-  const softness      = opts.softness ?? 26;
-  const maxSaturation = opts.maxSaturation ?? 22;
+  const tolerance = opts.tolerance ?? 48;
+  const feather   = opts.feather ?? 32;
 
-  const url = typeof input === "string" ? input : URL.createObjectURL(input);
+  const { url, revoke } = await toObjectUrl(input);
   try {
     const img = await loadImage(url);
     const w = img.naturalWidth || img.width;
@@ -49,21 +53,36 @@ export async function removeWhiteBackground(
     if (!ctx) throw new Error("Canvas not available.");
     ctx.drawImage(img, 0, 0);
 
-    const imgData = ctx.getImageData(0, 0, w, h);
+    let imgData: ImageData;
+    try { imgData = ctx.getImageData(0, 0, w, h); }
+    catch { throw new Error("The image is cross-origin and its pixels can't be read."); }
     const px = imgData.data;
-    for (let i = 0; i < px.length; i += 4) {
-      const r = px[i], g = px[i + 1], b = px[i + 2];
-      const mn = Math.min(r, g, b);
-      const mx = Math.max(r, g, b);
-      const sat = mx - mn;
-      if (sat <= maxSaturation) {
-        if (mn >= threshold) {
-          px[i + 3] = 0;                          // near-white → fully transparent
-        } else if (mn >= threshold - softness) {
-          // feather near the edge so the signature outline stays smooth
-          const t = (mn - (threshold - softness)) / softness; // 0..1
-          px[i + 3] = Math.round(px[i + 3] * (1 - t));
+
+    // ── Detect background colour from the four corners ──
+    const box = Math.max(3, Math.round(Math.min(w, h) * 0.06));
+    let rs = 0, gs = 0, bs = 0, n = 0;
+    const sampleAt = (x0: number, y0: number) => {
+      for (let y = y0; y < y0 + box && y < h; y++) {
+        for (let x = x0; x < x0 + box && x < w; x++) {
+          const i = (y * w + x) * 4;
+          if (px[i + 3] < 8) continue; // skip already-transparent
+          rs += px[i]; gs += px[i + 1]; bs += px[i + 2]; n++;
         }
+      }
+    };
+    sampleAt(0, 0); sampleAt(w - box, 0); sampleAt(0, h - box); sampleAt(w - box, h - box);
+    if (n === 0) throw new Error("Could not sample the background.");
+    const br = rs / n, bg = gs / n, bb = bs / n;
+
+    // ── Remove pixels close to that background colour, with a feathered edge ──
+    for (let i = 0; i < px.length; i += 4) {
+      const dr = px[i] - br, dg = px[i + 1] - bg, db = px[i + 2] - bb;
+      const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+      if (dist <= tolerance) {
+        px[i + 3] = 0;
+      } else if (dist <= tolerance + feather) {
+        const t = (dist - tolerance) / feather; // 0..1
+        px[i + 3] = Math.round(px[i + 3] * t);
       }
     }
     ctx.putImageData(imgData, 0, 0);
@@ -72,6 +91,6 @@ export async function removeWhiteBackground(
       canvas.toBlob(b => (b ? resolve(b) : reject(new Error("Could not encode PNG."))), "image/png")
     );
   } finally {
-    if (typeof input !== "string") URL.revokeObjectURL(url);
+    if (revoke) URL.revokeObjectURL(url);
   }
 }
