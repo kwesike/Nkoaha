@@ -354,7 +354,7 @@ export default function SettingsPage() {
             <div className="st-row-label">Your Signature</div>
             <div className="st-row-value">
               <div className="st-sig-wrap">
-                <div className="st-sig-preview">
+                <div className="st-sig-preview" style={{backgroundImage:"linear-gradient(45deg,#e2e0dc 25%,transparent 25%),linear-gradient(-45deg,#e2e0dc 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e2e0dc 75%),linear-gradient(-45deg,transparent 75%,#e2e0dc 75%)",backgroundSize:"14px 14px",backgroundPosition:"0 0,0 7px,7px -7px,-7px 0"}}>
                   {sigUrl
                     ? <img src={sigUrl} alt="signature" crossOrigin="anonymous" onError={()=>setSigUrl("")}/>
                     : <span style={{fontSize:11,color:"var(--muted)"}}>No signature</span>
@@ -364,7 +364,7 @@ export default function SettingsPage() {
                   <button className="st-btn st-btn-ghost" onClick={()=>sigInputRef.current?.click()} disabled={uploading==="sig"}>
                     {uploading==="sig"?"Uploading…":sigUrl?"Replace Signature":"Upload Signature"}
                   </button>
-                  <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>Upload a PNG with transparent background for best results.</div>
+                  <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>The background is removed automatically on upload. The checkered area behind the signature shows the transparent parts.</div>
                   {msg?.field==="sig"&&<div className={`st-msg ${msg.type}`}>{msg.text}</div>}
                 </div>
               </div>
