@@ -9,6 +9,7 @@ type AuthMethod = "authenticator" | "email_otp";
 export default function IndividualSignup() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [agreed, setAgreed] = useState(false);
   const [inviteEmail, setInviteEmail] = useState<string | null>(null);
   const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [authMethod, setAuthMethod] = useState<AuthMethod>("authenticator");
@@ -25,6 +26,8 @@ export default function IndividualSignup() {
 
   const handleSignup = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+
+    if (!agreed) { return; } // must accept terms + privacy (NDPA consent)
 
     const formData = new FormData(e.currentTarget);
     const name = formData.get("name") as string;
@@ -167,7 +170,11 @@ export default function IndividualSignup() {
           )}
         </div>
 
-        <button disabled={loading}>
+        <label style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:13,color:"#475569",margin:"4px 0 14px",lineHeight:1.5,cursor:"pointer"}}>
+          <input type="checkbox" checked={agreed} onChange={e=>setAgreed(e.target.checked)} style={{marginTop:3,flexShrink:0}} />
+          <span>I agree to NkoAha's <a href="https://nkoaha.space/terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="https://nkoaha.space/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>, and I consent to my personal data being processed and stored outside Nigeria as described in the Privacy Policy.</span>
+        </label>
+        <button disabled={loading || !agreed}>
           {loading ? "Creating…" : "Continue"}
         </button>
       </form>
