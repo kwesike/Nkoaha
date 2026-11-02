@@ -227,12 +227,24 @@ const STYLES = `
     .dp-hamburger{display:flex}
     .dp-expand-btn{display:none !important}
     .dp-main{width:100%;min-width:0}
-    .dp-topbar{padding:0 10px;gap:8px}
-    .dp-canvas{padding:0 6px 80px}
+    /* Topbar scrolls horizontally so every action button stays reachable
+       (they are flex-shrink:0 and would otherwise be clipped off-screen). */
+    .dp-topbar{padding:0 10px;gap:8px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+    .dp-topbar::-webkit-scrollbar{height:0}
+    .dp-title-input{min-width:70px;flex:0 1 auto}
+    .dp-canvas{padding:0 6px 80px;overflow-x:hidden}
+    /* The page is a flex child with flex-shrink:0, which cancels max-width:100%
+       and leaves it pinned at 816px — wider than the phone, so it overflowed
+       off both edges (left text clipped). Let it go full-width on mobile. */
+    .dp-page-card{width:100%;min-width:0;flex-shrink:1}
+    .dp-page-gap{width:100%;min-width:0}
     .dp-page-body{padding:22px 16px;min-height:auto}
     .dp-hf-bar{padding:0 16px}
     .dp-pdf-toolbar{padding:8px 10px}
-    .dp-statusbar{padding:0 10px}
+    .dp-statusbar{padding:0 10px;overflow-x:auto;white-space:nowrap}
+    /* Floating comments panel must fit a narrow screen */
+    .dp-comments-dialog{width:92vw;max-width:340px;right:4vw;bottom:76px}
+    .dp-comments-fab{bottom:16px;right:16px}
   }
 `;
 
@@ -4064,7 +4076,7 @@ export default function DocumentsPage() {
 
         {loading&&!converting&&(
           <div className="dp-canvas" style={{justifyContent:"center"}}>
-            <div className="dp-page-card" style={{width:816,padding:"48px 96px"}}>
+            <div className="dp-page-card" style={{width:816,maxWidth:"100%",padding:"48px 96px"}}>
               {[280,420,200,380,160,320].map((w,i)=><div key={i} className="dp-skel" style={{height:14,width:w,maxWidth:"100%",marginBottom:16}}/>)}
             </div>
           </div>
