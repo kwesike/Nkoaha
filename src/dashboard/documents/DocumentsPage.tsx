@@ -1800,6 +1800,11 @@ export default function DocumentsPage() {
   const [aiDocType, setAiDocType] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState<string|null>(null);
+  // Handwriting → document (vision OCR)
+  const [showScan, setShowScan] = useState(false);
+  const [scanFiles, setScanFiles] = useState<File[]>([]);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanErr, setScanErr] = useState<string|null>(null);
   const [merging, setMerging] = useState(false);
   const [pendingMergeFile, setPendingMergeFile] = useState<File|null>(null); // file awaiting replace/new choice
   const mergeInputRef = useRef<HTMLInputElement|null>(null);
@@ -2431,6 +2436,55 @@ export default function DocumentsPage() {
     }catch(e:any){
       setAiBusy(false);
       setAiErr(e?.message || "Something went wrong. Please try again.");
+    }
+  }
+
+  // ── Convert handwritten page photos/scans into an editable document ──
+  // Uses the handwriting-ocr edge function (vision model). Paid feature, also
+  // enforced server-side. On success, creates a new editable doc from the HTML.
+  async function convertHandwriting(){
+    const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
+    if(!scanFiles.length){ setScanErr("Add at least one photo or scan of the handwriting."); return; }
+    setScanBusy(true); setScanErr(null);
+    try{
+      if(!(await checkDocLimit(user.id))){ setScanBusy(false); return; }
+      const toB64=(f:File)=>new Promise<{mime:string;data:string}>((res,rej)=>{
+        const r=new FileReader();
+        r.onload=()=>{ const str=String(r.result||""); res({ mime:f.type||"image/jpeg", data:str.split(",")[1]||"" }); };
+        r.onerror=()=>rej(new Error("Could not read "+f.name));
+        r.readAsDataURL(f);
+      });
+      const images=await Promise.all(scanFiles.slice(0,10).map(toB64));
+      const{data:{session}}=await supabase.auth.getSession();
+      const supaUrl=(supabase as any).supabaseUrl||import.meta.env.VITE_SUPABASE_URL;
+      const resp=await fetch(`${supaUrl}/functions/v1/handwriting-ocr`,{
+        method:"POST",
+        headers:{ "Content-Type":"application/json", Authorization:`Bearer ${session?.access_token||""}` },
+        body:JSON.stringify({ images }),
+      });
+      const result=await resp.json().catch(()=>({}));
+      if(!resp.ok){ throw new Error(result?.error || `Transcription failed (${resp.status}).`); }
+      const html:string = result?.html || "";
+      if(!html){ throw new Error("No text could be read. Try a clearer, well-lit photo."); }
+
+      const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+      const title = (m?.[1]?.replace(/<[^>]+>/g,"").trim() || "Transcribed document").slice(0,120);
+      const tiptapJson = htmlToTipTapJson(html);
+      const{data,error}=await supabase.from("documents").insert({
+        owner_id:user.id,sender_id:user.id,uploaded_by:user.id,
+        owner_type:(activeDoc as any)?.isOrgDoc?"organization":"individual",
+        document_kind:"editor",format:"new",
+        title,content:tiptapJson,file_url:"",status:"draft",pages:1,
+      }).select().single();
+      if(error||!data){ throw new Error(error?.message || "Could not save the document."); }
+      const nd:DocumentItem={id:data.id,title:data.title,fileUrl:"",format:"new",pages:1};
+      setDocuments(prev=>[nd,...prev]);
+      await logActivity("handwriting_converted",data.id,data.title,user.id);
+      setScanBusy(false); setShowScan(false); setScanFiles([]);
+      openDocument(nd);
+    }catch(e:any){
+      setScanBusy(false);
+      setScanErr(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -3769,6 +3823,10 @@ export default function DocumentsPage() {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 4.8L18.7 9.7 13.9 11.6 12 16.4 10.1 11.6 5.3 9.7 10.1 7.8z"/><path d="M19 15l.7 1.8L21.5 17.5 19.7 18.2 19 20 18.3 18.2 16.5 17.5 18.3 16.8z"/></svg>
               Draft with Uburu AI
             </button>
+            <button className="dp-sb-btn ghost" onClick={()=>{setScanErr(null);setShowScan(true);}} style={{color:"#c4b5fd"}}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
+              Scan handwriting
+            </button>
             <input hidden ref={fileInputRef} type="file" accept=".docx,.pdf,.xlsx,.pptx"
               onChange={e=>{const f=e.target.files?.[0];if(f)uploadFile(f);e.target.value="";}}/>
             <input hidden ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp"
@@ -4734,6 +4792,51 @@ export default function DocumentsPage() {
                 {aiBusy
                   ? <><div className="dp-spinner" style={{width:14,height:14,borderWidth:2}}/> Drafting…</>
                   : <>Generate draft</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showScan&&(
+        <div className="dp-modal-backdrop" onClick={()=>!scanBusy&&setShowScan(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:460,maxWidth:"94vw"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/><path d="M7 8h7"/><path d="M7 16h5"/></svg>
+              <div style={{fontSize:16,fontWeight:700}}>Handwriting &rarr; Document</div>
+            </div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:16}}>
+              Upload clear photos or scans of your handwritten pages. We&apos;ll transcribe them into an editable document you can refine and sign. Multiple pages are kept in order.
+            </div>
+
+            <label style={{display:"block",border:"1.5px dashed var(--border)",borderRadius:10,padding:"18px",textAlign:"center",cursor:scanBusy?"default":"pointer",background:"var(--bg,#faf9f8)",fontSize:13,color:"var(--muted)"}}>
+              <input type="file" accept="image/*" multiple capture="environment" style={{display:"none"}} disabled={scanBusy}
+                onChange={e=>{ const fs=Array.from(e.target.files||[]); if(fs.length) setScanFiles(prev=>[...prev,...fs].slice(0,10)); e.currentTarget.value=""; }}/>
+              &#128247; Tap to add photos, or choose image files
+            </label>
+
+            {scanFiles.length>0&&(
+              <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:12}}>
+                {scanFiles.map((f,i)=>(
+                  <div key={i} style={{position:"relative",width:68,height:68,borderRadius:8,overflow:"hidden",border:"1px solid var(--border)"}}>
+                    <img src={URL.createObjectURL(f)} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+                    {!scanBusy&&<button onClick={()=>setScanFiles(prev=>prev.filter((_,j)=>j!==i))} style={{position:"absolute",top:2,right:2,width:18,height:18,borderRadius:"50%",border:"none",background:"rgba(0,0,0,.65)",color:"#fff",fontSize:11,cursor:"pointer",lineHeight:1}}>&times;</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:8}}>{scanFiles.length} page{scanFiles.length===1?"":"s"} &middot; up to 10 &middot; well-lit, flat photos read best.</div>
+
+            {scanErr&&(
+              <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,fontSize:12.5,background:"var(--red-bg,#fee2e2)",color:"var(--red,#991b1b)"}}>{scanErr}</div>
+            )}
+
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
+              <button className="dp-btn dp-btn-ghost" onClick={()=>setShowScan(false)} disabled={scanBusy}>Cancel</button>
+              <button className="dp-btn dp-btn-primary" onClick={convertHandwriting} disabled={scanBusy||!scanFiles.length}>
+                {scanBusy
+                  ? <><div className="dp-spinner" style={{width:14,height:14,borderWidth:2}}/> Transcribing&hellip;</>
+                  : <>Convert to document</>}
               </button>
             </div>
           </div>
