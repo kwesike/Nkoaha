@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from ".././lib/supabase";
+import { supabase } from "./../lib/supabase";
 import AdminLayout from "./AdminLayout";
 
 const STYLES = `
@@ -92,13 +92,14 @@ export default function AdminSubscriptionsPage() {
   async function saveEdit() {
     if (!editing) return;
     setSaving(true); setEditMsg(null);
-    const { error } = await supabase.from("subscriptions").update({
+    const { data, error } = await supabase.from("subscriptions").update({
       plan_id:    editPlan,
       status:     editStatus,
       expires_at: editExpiry ? new Date(editExpiry).toISOString() : null,
-    }).eq("id", editing.id);
+    }).eq("id", editing.id).select("id");
 
     if (error) { setEditMsg({t:"error",m:error.message}); setSaving(false); return; }
+    if (!data || data.length === 0) { setEditMsg({t:"error",m:"Blocked by a permissions policy. Run fix_admin_subscriptions_rls.sql in Supabase."}); setSaving(false); return; }
     setEditMsg({t:"success",m:"Subscription updated."});
     setSaving(false);
     load();
@@ -106,15 +107,19 @@ export default function AdminSubscriptionsPage() {
 
   async function cancelSub(sub: any) {
     if (!confirm(`Cancel subscription for ${sub.email}?`)) return;
-    await supabase.from("subscriptions").update({ status:"cancelled" }).eq("id", sub.id);
+    const { data, error } = await supabase.from("subscriptions").update({ status:"cancelled" }).eq("id", sub.id).select("id");
+    if (error) { alert("Could not cancel: " + error.message); return; }
+    if (!data || data.length === 0) { alert("Change was blocked by a permissions policy. Run fix_admin_subscriptions_rls.sql in Supabase, then try again."); return; }
     load();
   }
 
   async function reactivateSub(sub: any) {
-    await supabase.from("subscriptions").update({
+    const { data, error } = await supabase.from("subscriptions").update({
       status: "active",
       expires_at: new Date(Date.now() + 30*24*60*60*1000).toISOString(),
-    }).eq("id", sub.id);
+    }).eq("id", sub.id).select("id");
+    if (error) { alert("Could not reactivate: " + error.message); return; }
+    if (!data || data.length === 0) { alert("Reactivation was blocked by a permissions policy. Run fix_admin_subscriptions_rls.sql in Supabase, then try again."); return; }
     load();
   }
 
