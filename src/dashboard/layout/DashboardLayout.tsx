@@ -21,6 +21,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [displayName, setDisplayName] = useState("");
   const [ready, setReady]             = useState(false);
   const [hasPremium, setHasPremium]   = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -190,9 +191,21 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <div className="dashboard-layout">
-      <Topbar onLogout={logout} role={role} displayName={displayName} />
+      <Topbar
+        onLogout={logout}
+        role={role}
+        displayName={displayName}
+        onMenuClick={() => setMobileNavOpen(true)}
+      />
       <div className="dashboard-body">
-        <Sidebar role={role} />
+        <Sidebar
+          role={role}
+          mobileOpen={mobileNavOpen}
+          onNavigate={() => setMobileNavOpen(false)}
+        />
+        {mobileNavOpen && (
+          <div className="dash-nav-overlay" onClick={() => setMobileNavOpen(false)} />
+        )}
         <main className="dashboard-content">
           <Suspense fallback={
             <div style={{padding:32}}>

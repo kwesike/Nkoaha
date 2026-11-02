@@ -7,6 +7,10 @@ import { supabase } from "../../lib/supabase";
 ───────────────────────────────────────────── */
 interface SidebarProps {
   role: "individual" | "organization" | "organization_member";
+  /** Mobile drawer: when true the sidebar slides in full-width. */
+  mobileOpen?: boolean;
+  /** Called after a nav item is tapped — used to close the mobile drawer. */
+  onNavigate?: () => void;
 }
 
 interface MenuItem {
@@ -354,12 +358,29 @@ const STYLES = `
   .sb-role-badge.individual   { background: rgba(124,58,237,0.18); color: #a78bfa; }
   .sb-role-badge.organization { background: rgba(37,99,235,0.18);  color: #93c5fd; }
   .sb-role-badge.member       { background: rgba(22,163,74,0.18);  color: #86efac; }
+
+  /* ── Mobile: sidebar becomes an off-canvas drawer ── */
+  @media (max-width:820px){
+    .sb-root{
+      position:fixed;
+      top:56px; left:0; bottom:0;
+      height:auto;
+      width:var(--sb-w-expanded) !important;
+      transform:translateX(-100%);
+      transition:transform var(--sb-transition);
+      box-shadow:4px 0 24px rgba(0,0,0,0.25);
+    }
+    .sb-root.mobile-open{ transform:translateX(0); }
+    /* Labels always visible inside the open drawer; no hover tooltips on touch */
+    .sb-item::after{ display:none; }
+    .sb-active-dot{ display:none !important; }
+  }
 `;
 
 /* ─────────────────────────────────────────────
    COMPONENT
 ───────────────────────────────────────────── */
-export default function Sidebar({ role }: SidebarProps) {
+export default function Sidebar({ role, mobileOpen = false, onNavigate }: SidebarProps) {
   const [expanded, setExpanded] = useState(false);
   const [userName, setUserName]         = useState("");
   const [userInitials, setUserInitials]   = useState("U");
@@ -481,7 +502,7 @@ export default function Sidebar({ role }: SidebarProps) {
 
   return (
     <aside
-      className={`sb-root ${expanded ? "expanded" : ""}`}
+      className={`sb-root ${(expanded || mobileOpen) ? "expanded" : ""} ${mobileOpen ? "mobile-open" : ""}`}
       onMouseEnter={() => setExpanded(true)}
       onMouseLeave={() => setExpanded(false)}
     >
@@ -502,7 +523,7 @@ export default function Sidebar({ role }: SidebarProps) {
           <button
             key={item.label}
             className={`sb-item ${isActive(item.path) ? "active" : ""}`}
-            onClick={() => navigate(item.path)}
+            onClick={() => { navigate(item.path); onNavigate?.(); }}
             data-label={item.label}
           >
             <span className="sb-item-icon">{item.icon}</span>

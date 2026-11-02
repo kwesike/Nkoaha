@@ -7,6 +7,8 @@ interface TopbarProps {
   onLogout: () => void;
   role: "individual" | "organization" | "organization_member";
   displayName?: string;
+  /** Mobile: open the sidebar drawer. Shown only below the 820px breakpoint. */
+  onMenuClick?: () => void;
 }
 
 const STYLES = `
@@ -65,7 +67,20 @@ const STYLES = `
   .tb-notif-item-body{font-size:12px;color:var(--tb-muted);line-height:1.45}
   .tb-notif-item-time{font-size:10.5px;color:#a8a29e;margin-top:4px;font-family:var(--tb-mono)}
   .tb-notif-item-link{display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;color:var(--tb-purple)}
-  .tb-notif-empty{padding:36px 16px;text-align:center;color:#a8a29e;font-size:12.5px}`;
+  .tb-notif-empty{padding:36px 16px;text-align:center;color:#a8a29e;font-size:12.5px}
+  /* ── Mobile hamburger (hidden on desktop) ── */
+  .tb-hamburger{display:none;width:36px;height:36px;border-radius:9px;border:none;background:transparent;color:var(--tb-text);align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent}
+  .tb-hamburger:hover{background:#f5f3ef}
+  @media (max-width:820px){
+    .tb-root{padding:0 10px}
+    .tb-hamburger{display:flex}
+    .tb-divider,.tb-page-title{display:none}
+    .tb-role-badge{display:none}
+    .tb-display-name{display:none}
+    .tb-profile-btn{padding:4px;border-color:transparent}
+    .tb-logo{height:24px}
+    .tb-dropdown,.tb-notif-panel{right:8px}
+  }`;
 
 const ROLE_LABELS: Record<string, string> = {
   individual:          "Individual",
@@ -91,7 +106,7 @@ const PAGE_TITLES: Record<string, string> = {
   overview:                      "Dashboard",
 };
 
-export default function Topbar({ onLogout, role, displayName }: TopbarProps) {
+export default function Topbar({ onLogout, role, displayName, onMenuClick }: TopbarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [pageTitle, setPageTitle] = useState("Dashboard");
   const menuRef = useRef<HTMLDivElement>(null);
@@ -202,6 +217,11 @@ export default function Topbar({ onLogout, role, displayName }: TopbarProps) {
     <header className="tb-root">
       {/* LEFT */}
       <div className="tb-left">
+        <button className="tb-hamburger" onClick={onMenuClick} aria-label="Open menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
         <img src={logo} alt="Nkoaha" className="tb-logo" />
         <div className="tb-divider" />
         <span className="tb-page-title">{pageTitle}</span>
