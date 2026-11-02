@@ -215,6 +215,25 @@ const STYLES = `
   .dp-auth-btn{flex:1;padding:11px;border-radius:9px;border:none;font-family:var(--font);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
   .dp-auth-btn.primary{background:var(--accent);color:#fff}.dp-auth-btn.primary:hover{background:var(--accent-dark)}.dp-auth-btn.primary:disabled{opacity:.5;cursor:not-allowed}
   .dp-auth-btn.ghost{background:var(--bg);color:var(--muted);border:1.5px solid var(--border)}.dp-auth-btn.ghost:hover{background:var(--border)}
+
+  /* ── Mobile responsiveness ───────────────────────────────── */
+  .dp-hamburger{display:none;background:none;border:none;color:var(--text);cursor:pointer;padding:5px;border-radius:7px;align-items:center;justify-content:center;flex-shrink:0}
+  .dp-nav-overlay{display:none}
+  @media (max-width:820px){
+    .dp-sidebar{position:fixed;top:0;left:0;bottom:0;z-index:70;width:84vw;max-width:300px;transform:translateX(-100%);transition:transform .22s ease;box-shadow:0 0 40px rgba(0,0,0,.4)}
+    .dp-sidebar.collapsed{width:84vw;max-width:300px}
+    .dp-sidebar.mobile-open{transform:translateX(0)}
+    .dp-nav-overlay.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:65}
+    .dp-hamburger{display:flex}
+    .dp-expand-btn{display:none !important}
+    .dp-main{width:100%;min-width:0}
+    .dp-topbar{padding:0 10px;gap:8px}
+    .dp-canvas{padding:0 6px 80px}
+    .dp-page-body{padding:22px 16px;min-height:auto}
+    .dp-hf-bar{padding:0 16px}
+    .dp-pdf-toolbar{padding:8px 10px}
+    .dp-statusbar{padding:0 10px}
+  }
 `;
 
 const Ico = {
@@ -893,6 +912,7 @@ export default function DocumentsPage() {
   };
 
   const openDocument=async(doc:DocumentItem)=>{
+    setMobileNav(false);
     setLoading(true);
     setPdfDoc(null);setPdfOverlays([]);setPdfTool("none");
     setDocxHtmlPages([]);setDocxOverlays([]);setDocxTool("none");setDocxPdfDoc(null);setDocxPdfReady(false);
@@ -1789,6 +1809,7 @@ export default function DocumentsPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(()=>{
     try{ return localStorage.getItem("dp_sidebar_collapsed")==="1"; }catch{ return false; }
   });
+  const [mobileNav, setMobileNav] = useState(false);
   const toggleSidebar=()=>setSidebarCollapsed(v=>{
     const nv=!v; try{ localStorage.setItem("dp_sidebar_collapsed", nv?"1":"0"); }catch{}
     return nv;
@@ -3807,7 +3828,8 @@ export default function DocumentsPage() {
 
   return (
     <div className="dp-root">
-      <aside className={`dp-sidebar ${sidebarCollapsed?"collapsed":""}`}>
+      <div className={`dp-nav-overlay ${mobileNav?"show":""}`} onClick={()=>setMobileNav(false)} />
+      <aside className={`dp-sidebar ${sidebarCollapsed?"collapsed":""} ${mobileNav?"mobile-open":""}`}>
         <div className="dp-sb-head">
           <div className="dp-brand">
             <div className="dp-brand-mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8" stroke="white" strokeWidth="1.5" fill="none"/></svg></div>
@@ -3884,6 +3906,9 @@ export default function DocumentsPage() {
 
       <main className="dp-main">
         <div className="dp-topbar">
+          <button className="dp-hamburger" onClick={()=>setMobileNav(v=>!v)} aria-label="Menu" title="Menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
           {sidebarCollapsed && (
             <button className="dp-expand-btn" onClick={toggleSidebar} title="Show documents panel" aria-label="Show documents panel">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
