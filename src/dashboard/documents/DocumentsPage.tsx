@@ -4810,7 +4810,7 @@ export default function DocumentsPage() {
             </div>
 
             <label style={{display:"block",border:"1.5px dashed var(--border)",borderRadius:10,padding:"18px",textAlign:"center",cursor:scanBusy?"default":"pointer",background:"var(--bg,#faf9f8)",fontSize:13,color:"var(--muted)"}}>
-              <input type="file" accept="image/*" multiple capture="environment" style={{display:"none"}} disabled={scanBusy}
+              <input type="file" accept="image/*" multiple style={{display:"none"}} disabled={scanBusy}
                 onChange={e=>{ const fs=Array.from(e.target.files||[]); if(fs.length) setScanFiles(prev=>[...prev,...fs].slice(0,10)); e.currentTarget.value=""; }}/>
               &#128247; Tap to add photos, or choose image files
             </label>
