@@ -68,9 +68,13 @@ const STYLES = `
   .tb-notif-item-time{font-size:10.5px;color:#a8a29e;margin-top:4px;font-family:var(--tb-mono)}
   .tb-notif-item-link{display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;color:var(--tb-purple)}
   .tb-notif-empty{padding:36px 16px;text-align:center;color:#a8a29e;font-size:12.5px}
-  /* ── Mobile hamburger (hidden on desktop) ── */
-  .tb-hamburger{display:none;width:36px;height:36px;border-radius:9px;border:none;background:transparent;color:var(--tb-text);align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent}
-  .tb-hamburger:hover{background:#f5f3ef}
+  /* ── Mobile menu button (hidden on desktop) — a labelled, tappable pill so
+        it's obvious this opens the main menu, not just decoration. ── */
+  .tb-hamburger{display:none;align-items:center;gap:6px;height:34px;padding:0 11px 0 9px;border-radius:9px;border:1px solid #d8ccf7;background:var(--tb-purple-l);color:var(--tb-purple);cursor:pointer;flex-shrink:0;font-family:var(--tb-font);font-size:12.5px;font-weight:600;-webkit-tap-highlight-color:transparent;animation:tb-ham-pulse 2.2s ease-in-out 3}
+  .tb-hamburger:hover{background:#e4dcfb}
+  .tb-hamburger:active{transform:scale(.96)}
+  .tb-ham-label{line-height:1}
+  @keyframes tb-ham-pulse{0%,100%{box-shadow:0 0 0 0 rgba(124,58,237,0)}50%{box-shadow:0 0 0 5px rgba(124,58,237,.16)}}
   @media (max-width:820px){
     .tb-root{padding:0 10px}
     .tb-hamburger{display:flex}
@@ -217,10 +221,11 @@ export default function Topbar({ onLogout, role, displayName, onMenuClick }: Top
     <header className="tb-root">
       {/* LEFT */}
       <div className="tb-left">
-        <button className="tb-hamburger" onClick={onMenuClick} aria-label="Open menu">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <button className="tb-hamburger" onClick={onMenuClick} aria-label="Open main menu">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
           </svg>
+          <span className="tb-ham-label">Menu</span>
         </button>
         <img src={logo} alt="Nkoaha" className="tb-logo" />
         <div className="tb-divider" />
