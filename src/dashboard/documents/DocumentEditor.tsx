@@ -310,6 +310,22 @@ export default function DocumentEditor({
       .de-prosemirror-host .ProseMirror pre { background:#1c1917;color:#e7e4df;border-radius:8px;padding:12px 16px;font-family:'DM Mono',monospace;font-size:13px;overflow-x:auto;margin:1em 0; }
       .de-prosemirror-host .ProseMirror img { max-width:100%;height:auto;border-radius:4px;margin:8px 0;display:block;border:2px solid transparent;transition:border-color .15s; }
       .de-prosemirror-host .ProseMirror img.ProseMirror-selectednode { border-color:#7c3aed;outline:2px solid #ede9fe; }
+      /* Never let editor content push wider than its page frame */
+      .de-editor-root { max-width:100%; }
+      .de-prosemirror-host { max-width:100%; overflow-x:hidden; }
+      /* ── Mobile: shrink chrome, scale text, keep wide blocks contained ── */
+      @media (max-width:820px){
+        .de-toolbar { padding:5px 6px;gap:1px; }
+        .de-tool { height:30px;min-width:30px;font-size:13px; }
+        .de-sep { margin:0 2px; }
+        .de-prosemirror-host .ProseMirror { font-size:13.5px;min-height:360px; }
+        .de-prosemirror-host .ProseMirror h1 { font-size:21px; }
+        .de-prosemirror-host .ProseMirror h2 { font-size:18px; }
+        .de-prosemirror-host .ProseMirror h3 { font-size:15px; }
+        /* A wide table scrolls inside itself instead of stretching the page */
+        .de-prosemirror-host .ProseMirror table { display:block;width:max-content;max-width:100%;overflow-x:auto; }
+        .de-prosemirror-host .ProseMirror pre { white-space:pre-wrap;word-break:break-word; }
+      }
     `;
     document.head.appendChild(el);
   }, []);

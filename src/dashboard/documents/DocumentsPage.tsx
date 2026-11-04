@@ -80,7 +80,10 @@ const STYLES = `
   .dp-doc-pages{font-size:10px;color:rgba(255,255,255,.3);font-family:var(--mono);margin-top:1px}
   .dp-doc-delete{opacity:0;background:none;border:none;color:rgba(255,255,255,.25);cursor:pointer;padding:3px;border-radius:4px;display:flex;flex-shrink:0;transition:opacity .15s}
   .dp-doc-item:hover .dp-doc-delete{opacity:1}.dp-doc-delete:hover{color:#f87171}
-  .dp-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+  .dp-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
+  /* Mobile scroll affordance for the horizontally-scrollable action topbar */
+  .dp-topbar-hint{display:none;position:absolute;top:0;right:0;height:50px;width:40px;align-items:center;justify-content:flex-end;padding-right:6px;color:var(--accent);background:linear-gradient(to right,rgba(255,255,255,0),#fff 55%);z-index:6;cursor:pointer;animation:dp-hint-pulse 1.6s ease-in-out infinite}
+  @keyframes dp-hint-pulse{0%,100%{opacity:.45}50%{opacity:.9}}
   .dp-topbar{height:50px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:12px;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
   .dp-title-input{border:none;outline:none;font-family:var(--font);font-size:15px;font-weight:500;color:var(--text);background:transparent;flex:1;min-width:0;padding:4px 8px;border-radius:6px;transition:background .15s}
   .dp-title-input:hover,.dp-title-input:focus{background:var(--bg)}
@@ -232,13 +235,14 @@ const STYLES = `
     .dp-topbar{padding:0 10px;gap:8px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
     .dp-topbar::-webkit-scrollbar{height:0}
     .dp-title-input{min-width:70px;flex:0 1 auto}
+    .dp-topbar-hint.show{display:flex}
     .dp-canvas{padding:0 6px 80px;overflow-x:hidden}
     /* The page is a flex child with flex-shrink:0, which cancels max-width:100%
        and leaves it pinned at 816px — wider than the phone, so it overflowed
        off both edges (left text clipped). Let it go full-width on mobile. */
     .dp-page-card{width:100%;min-width:0;flex-shrink:1}
     .dp-page-gap{width:100%;min-width:0}
-    .dp-page-body{padding:22px 16px;min-height:auto}
+    .dp-page-body{padding:22px 16px;min-height:auto;overflow-x:hidden}
     .dp-hf-bar{padding:0 16px}
     .dp-pdf-toolbar{padding:8px 10px}
     .dp-statusbar{padding:0 10px;overflow-x:auto;white-space:nowrap}
@@ -1822,6 +1826,22 @@ export default function DocumentsPage() {
     try{ return localStorage.getItem("dp_sidebar_collapsed")==="1"; }catch{ return false; }
   });
   const [mobileNav, setMobileNav] = useState(false);
+  // Mobile: the action topbar scrolls sideways. Show a faint "more →" hint
+  // whenever it overflows and isn't scrolled fully to the right.
+  const dpTopbarRef = useRef<HTMLDivElement>(null);
+  const [topbarMore, setTopbarMore] = useState(false);
+  useEffect(() => {
+    const el = dpTopbarRef.current;
+    if (!el) return;
+    const check = () => {
+      const more = el.scrollWidth - el.clientWidth - el.scrollLeft > 4;
+      setTopbarMore(more);
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    window.addEventListener("resize", check);
+    return () => { el.removeEventListener("scroll", check); window.removeEventListener("resize", check); };
+  }, [activeDoc, myRoute, docStatus]);
   const toggleSidebar=()=>setSidebarCollapsed(v=>{
     const nv=!v; try{ localStorage.setItem("dp_sidebar_collapsed", nv?"1":"0"); }catch{}
     return nv;
@@ -3917,7 +3937,7 @@ export default function DocumentsPage() {
       </aside>
 
       <main className="dp-main">
-        <div className="dp-topbar">
+        <div className="dp-topbar" ref={dpTopbarRef}>
           <button className="dp-hamburger" onClick={()=>setMobileNav(v=>!v)} aria-label="Menu" title="Menu">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
@@ -4062,6 +4082,11 @@ export default function DocumentsPage() {
           ):(
             <span style={{fontSize:14,color:"var(--muted)"}}>Select or upload a document</span>
           )}
+        </div>
+        {/* Mobile scroll affordance for the action bar */}
+        <div className={`dp-topbar-hint ${topbarMore?"show":""}`} aria-hidden="true"
+          onClick={()=>{ dpTopbarRef.current?.scrollBy({left:160,behavior:"smooth"}); }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
         </div>
 
         {converting&&<div className="dp-converting"><div className="dp-spinner"/><p>Processing document…</p><span>Preserving all formatting and content</span></div>}
