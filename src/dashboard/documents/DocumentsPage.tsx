@@ -83,6 +83,7 @@ const STYLES = `
   .dp-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
   /* Mobile scroll affordance for the horizontally-scrollable action topbar */
   .dp-topbar-hint{display:none;position:absolute;top:0;right:0;height:50px;width:40px;align-items:center;justify-content:flex-end;padding-right:6px;color:var(--accent);background:linear-gradient(to right,rgba(255,255,255,0),#fff 55%);z-index:6;cursor:pointer;animation:dp-hint-pulse 1.6s ease-in-out infinite}
+  .dp-topbar-hint.left{right:auto;left:0;justify-content:flex-start;padding-right:0;padding-left:6px;background:linear-gradient(to left,rgba(255,255,255,0),#fff 55%)}
   @keyframes dp-hint-pulse{0%,100%{opacity:.45}50%{opacity:.9}}
   .dp-topbar{height:50px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:12px;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
   .dp-title-input{border:none;outline:none;font-family:var(--font);font-size:15px;font-weight:500;color:var(--text);background:transparent;flex:1;min-width:0;padding:4px 8px;border-radius:6px;transition:background .15s}
@@ -110,7 +111,7 @@ const STYLES = `
   .dp-docx-sep{width:1px;height:18px;background:var(--border);margin:0 3px;flex-shrink:0}
   .dp-docx-sel{border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-family:var(--font);font-size:12px;cursor:pointer;background:#fff;height:26px;color:var(--text)}
   .dp-docx-iframe{display:block;width:100%;max-width:100%;border:none;min-height:912px;background:#fff;overflow:hidden;-webkit-font-smoothing:antialiased;image-rendering:crisp-edges}
-  .dp-pdf-stage{position:relative;line-height:0;display:block}
+  .dp-pdf-stage{position:relative;line-height:0;display:block;max-width:100%}
   .dp-pdf-canvas{display:block;max-width:100%;height:auto}
   .dp-pdf-overlay-item{position:absolute;cursor:move;user-select:none;z-index:10;display:flex;align-items:flex-start}
   .dp-overlay-img{display:block;object-fit:contain;pointer-events:none;border-radius:3px;max-width:400px;}
@@ -375,16 +376,23 @@ async function renderPdfPage(pdfDoc: any, pageNum: number, canvas: HTMLCanvasEle
     // display width so it reads horizontally. Portrait pages (Word docs, normal
     // PDFs) keep the standard letter width and stay vertical.
     const landscape = baseVp.width > baseVp.height * 1.05;
-    const pageW = landscape ? 1120 : 816;
+    const idealW = landscape ? 1120 : 816;
+    // Fit the page to the available width so it never overflows a phone.
+    // On desktop the canvas area is wider than idealW, so this is a no-op and
+    // the page keeps its full size; on mobile it shrinks to the screen.
+    const area = canvas.closest(".dp-canvas") as HTMLElement | null;
+    const avail = area ? area.clientWidth - 16 : idealW;
+    const pageW = Math.max(240, Math.min(idealW, avail > 0 ? avail : idealW));
+    // Render at display-width × dpr for crispness at whatever size we show.
     const scale  = (pageW / baseVp.width) * dpr;
     const vp     = page.getViewport({ scale });
     canvas.width  = Math.floor(vp.width);   // resetting width also clears the canvas
     canvas.height = Math.floor(vp.height);
     canvas.style.width  = pageW + "px";
     canvas.style.height = Math.floor(vp.height / dpr) + "px";
-    // Size the enclosing page card to match this page's width so a landscape
-    // page isn't clipped to the portrait 816px card (max-width:100% keeps it
-    // responsive on small screens). Done per-page so mixed decks still work.
+    // Size the enclosing page card to match this page's fitted width so a
+    // landscape page isn't clipped to the portrait card, and so a portrait
+    // page shrinks to the phone instead of overflowing off both edges.
     const card = canvas.closest(".dp-page-card") as HTMLElement | null;
     if (card) card.style.width = pageW + "px";
     const ctx = canvas.getContext("2d")!;
@@ -1830,12 +1838,13 @@ export default function DocumentsPage() {
   // whenever it overflows and isn't scrolled fully to the right.
   const dpTopbarRef = useRef<HTMLDivElement>(null);
   const [topbarMore, setTopbarMore] = useState(false);
+  const [topbarLess, setTopbarLess] = useState(false);
   useEffect(() => {
     const el = dpTopbarRef.current;
     if (!el) return;
     const check = () => {
-      const more = el.scrollWidth - el.clientWidth - el.scrollLeft > 4;
-      setTopbarMore(more);
+      setTopbarMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 4); // more to the right
+      setTopbarLess(el.scrollLeft > 4);                                   // scrolled away from the start
     };
     check();
     el.addEventListener("scroll", check, { passive: true });
@@ -4083,7 +4092,11 @@ export default function DocumentsPage() {
             <span style={{fontSize:14,color:"var(--muted)"}}>Select or upload a document</span>
           )}
         </div>
-        {/* Mobile scroll affordance for the action bar */}
+        {/* Mobile scroll affordances for the action bar — left (go back) + right (more) */}
+        <div className={`dp-topbar-hint left ${topbarLess?"show":""}`} aria-hidden="true"
+          onClick={()=>{ dpTopbarRef.current?.scrollBy({left:-160,behavior:"smooth"}); }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </div>
         <div className={`dp-topbar-hint ${topbarMore?"show":""}`} aria-hidden="true"
           onClick={()=>{ dpTopbarRef.current?.scrollBy({left:160,behavior:"smooth"}); }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
