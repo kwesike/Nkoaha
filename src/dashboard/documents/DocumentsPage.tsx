@@ -113,7 +113,7 @@ const STYLES = `
   .dp-docx-iframe{display:block;width:100%;max-width:100%;border:none;min-height:912px;background:#fff;overflow:hidden;-webkit-font-smoothing:antialiased;image-rendering:crisp-edges}
   .dp-pdf-stage{position:relative;line-height:0;display:block;max-width:100%}
   .dp-pdf-canvas{display:block;max-width:100%;height:auto}
-  .dp-pdf-overlay-item{position:absolute;cursor:move;user-select:none;z-index:10;display:flex;align-items:flex-start}
+  .dp-pdf-overlay-item{position:absolute;cursor:move;user-select:none;touch-action:none;z-index:10;display:flex;align-items:flex-start}
   .dp-overlay-img{display:block;object-fit:contain;pointer-events:none;border-radius:3px;max-width:400px;}
   .dp-pdf-overlay-item:hover .dp-pdf-overlay-del{opacity:1}
   .dp-pdf-overlay-del{opacity:0;position:absolute;top:-8px;right:-8px;width:16px;height:16px;background:#ef4444;color:#fff;border:none;border-radius:50%;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:opacity .15s;z-index:11}
@@ -4122,7 +4122,7 @@ export default function DocumentsPage() {
 
         {activeDoc&&!loading&&!converting&&(
           <div className="dp-canvas" ref={canvasAreaRef} onContextMenu={handleRightClick}
-            onMouseMove={e=>{
+            onPointerMove={e=>{
               if(!dragOverlay)return;
               // Multi-page aware drag: find which page (.dp-pdf-stage) the cursor
               // is currently over, and position the overlay relative to THAT page.
@@ -4165,7 +4165,7 @@ export default function DocumentsPage() {
               setDocxOverlays(mover);
               setDragStart({x:e.clientX,y:e.clientY});
             }}
-            onMouseUp={()=>{if(dragOverlay){setDragOverlay(null);setSaveStatus("unsaved");}}}
+            onPointerUp={()=>{if(dragOverlay){setDragOverlay(null);setSaveStatus("unsaved");}}}
           >
             {/* ══ PDF ══ */}
             {activeDoc.format==="pdf"&&pdfDoc&&(<>
@@ -4242,7 +4242,7 @@ export default function DocumentsPage() {
                       {pdfOverlays.filter(o=>o.pageIdx===i).map(ov=>(
                         <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
                           onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"pdf");}}}
-                          onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
+                          onPointerDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                           onWheel={e=>{
                             e.stopPropagation();
                             const delta=e.deltaY<0?2:-2;
@@ -4251,9 +4251,9 @@ export default function DocumentsPage() {
                           }}>
                           {ov.type!=="table"&&(
                           <div className="dp-overlay-resize">
-                            <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}>+</button>
+                            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}>+</button>
                             <span>{ov.fontSize||16}px</span>
-                            <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}>−</button>
+                            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}>−</button>
                           </div>
                           )}
                           {ov.type==="image"?(
@@ -4271,7 +4271,7 @@ export default function DocumentsPage() {
                               {!isLocked(ov)&&(
                                 <div className="dp-ov-table-handle"
                                   title="Drag to move table"
-                                  onMouseDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}>
+                                  onPointerDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}>
                                   <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="6" r="1.6"/><circle cx="12" cy="6" r="1.6"/><circle cx="18" cy="6" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></svg>
                                   <span>Move</span>
                                 </div>
@@ -4284,7 +4284,7 @@ export default function DocumentsPage() {
                                         <td key={c} data-cell={`${r}:${c}`}
                                           contentEditable={!isLocked(ov)} suppressContentEditableWarning
                                           onFocus={()=>setActiveCell(`${ov.id}:${r}:${c}`)}
-                                          onMouseDown={e=>e.stopPropagation()}
+                                          onPointerDown={e=>e.stopPropagation()}
                                           onClick={e=>e.stopPropagation()}
                                           onBlur={e=>tableSetCell(ov.id,r,c,{text:e.currentTarget.textContent||""})}
                                           style={{
@@ -4299,7 +4299,7 @@ export default function DocumentsPage() {
                                 </tbody>
                               </table>
                               {!isLocked(ov)&&(
-                                <div className="dp-ov-table-ctrls" onMouseDown={e=>e.stopPropagation()}>
+                                <div className="dp-ov-table-ctrls" onPointerDown={e=>e.stopPropagation()}>
                                   <button title="Add row"    onClick={e=>{e.stopPropagation();tableAddRow(ov.id);}}>+Row</button>
                                   <button title="Remove row" onClick={e=>{e.stopPropagation();tableDelRow(ov.id);}}>−Row</button>
                                   <button title="Add column"    onClick={e=>{e.stopPropagation();tableAddCol(ov.id);}}>+Col</button>
@@ -4311,7 +4311,7 @@ export default function DocumentsPage() {
                                 const cell=ov.tableData!.cells[r]?.[c];
                                 if(!cell) return null;
                                 return (
-                                  <div className="dp-ov-cell-bar" onMouseDown={e=>e.stopPropagation()}>
+                                  <div className="dp-ov-cell-bar" onPointerDown={e=>e.stopPropagation()}>
                                     <button className={cell.bold?"on":""} title="Bold" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{bold:!cell.bold});}}><b>B</b></button>
                                     <button className={cell.align==="left"?"on":""} title="Left" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"left"});}}>⬅</button>
                                     <button className={cell.align==="center"?"on":""} title="Center" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"center"});}}>⬌</button>
@@ -4331,7 +4331,7 @@ export default function DocumentsPage() {
                               className="dp-pdf-overlay-text"
                               style={{fontSize:ov.fontSize||16,transform:`rotate(${ov.rotation||0}deg)`,color:ov.color||"#1c1917",fontWeight:ov.bold?700:400,textDecoration:ov.underline?"underline":"none",cursor:isLocked(ov)?"not-allowed":"move",opacity:isLocked(ov)?0.85:1,outline:isLocked(ov)?"none":undefined}}
                               title={isLocked(ov)?"Placed by a previous recipient — cannot be edited":""}
-                              onMouseDown={e=>{
+                              onPointerDown={e=>{
                                 if(document.activeElement===e.currentTarget)e.stopPropagation();
                               }}
                               onClick={e=>e.stopPropagation()}
@@ -4342,20 +4342,20 @@ export default function DocumentsPage() {
                             onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}>×</button>}
                           {!isLocked(ov)&&(ov.type==="text"||ov.type==="date")&&(
                             <div style={{position:"absolute",bottom:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:13}}>
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,bold:!o.bold}:o));setSaveStatus("unsaved");}}
+                              <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,bold:!o.bold}:o));setSaveStatus("unsaved");}}
                                 title="Bold" style={{background:ov.bold?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 4px",borderRadius:3}}>B</button>
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,underline:!o.underline}:o));setSaveStatus("unsaved");}}
+                              <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,underline:!o.underline}:o));setSaveStatus("unsaved");}}
                                 title="Underline" style={{background:ov.underline?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,textDecoration:"underline",cursor:"pointer",padding:"0 4px",borderRadius:3}}>U</button>
-                              <label title="Text colour" onMouseDown={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",cursor:"pointer"}}>
+                              <label title="Text colour" onPointerDown={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",cursor:"pointer"}}>
                                 <input type="color" value={ov.color||"#1c1917"} onClick={e=>e.stopPropagation()}
                                   onChange={e=>{const v=e.target.value;setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,color:v}:o));setSaveStatus("unsaved");}}
                                   style={{width:18,height:16,padding:0,border:"none",background:"none",cursor:"pointer"}}/>
                               </label>
                               <span style={{width:1,height:14,background:"rgba(255,255,255,.25)"}}/>
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,rotation:((o.rotation||0)-15+360)%360}:o));setSaveStatus("unsaved");}}
+                              <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,rotation:((o.rotation||0)-15+360)%360}:o));setSaveStatus("unsaved");}}
                                 style={{background:"none",border:"none",color:"#fff",fontSize:12,cursor:"pointer",padding:"0 2px"}}>↺</button>
                               <span style={{color:"#ccc",fontSize:9,fontFamily:"monospace",minWidth:24,textAlign:"center"}}>{ov.rotation||0}°</span>
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,rotation:((o.rotation||0)+15)%360}:o));setSaveStatus("unsaved");}}
+                              <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setPdfOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,rotation:((o.rotation||0)+15)%360}:o));setSaveStatus("unsaved");}}
                                 style={{background:"none",border:"none",color:"#fff",fontSize:12,cursor:"pointer",padding:"0 2px"}}>↻</button>
                             </div>
                           )}
@@ -4445,7 +4445,7 @@ export default function DocumentsPage() {
                         {docxOverlays.filter(o=>o.pageIdx===i).map(ov=>(
                           <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
                             onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"docx");}}}
-                          onMouseDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
+                          onPointerDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                             onWheel={e=>{
                               e.stopPropagation();
                               if(isLocked(ov))return;
@@ -4455,9 +4455,9 @@ export default function DocumentsPage() {
                             }}>
                             {ov.type!=="table"&&(
                             <div className="dp-overlay-resize">
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}}>+</button>
+                              <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||16)+4)}:o));setSaveStatus("unsaved");}}}>+</button>
                               <span>{ov.fontSize||16}px</span>
-                              <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}}>−</button>
+                              <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();if(!isLocked(ov)){setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(8,(o.fontSize||16)-4)}:o));setSaveStatus("unsaved");}}}>−</button>
                             </div>
                             )}
                             {ov.type==="image"?(
@@ -4473,7 +4473,7 @@ export default function DocumentsPage() {
                                 {!isLocked(ov)&&(
                                   <div className="dp-ov-table-handle"
                                     title="Drag to move table"
-                                    onMouseDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}>
+                                    onPointerDown={e=>{e.stopPropagation();setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}>
                                     <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><circle cx="6" cy="6" r="1.6"/><circle cx="12" cy="6" r="1.6"/><circle cx="18" cy="6" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18" cy="12" r="1.6"/></svg>
                                     <span>Move</span>
                                   </div>
@@ -4486,7 +4486,7 @@ export default function DocumentsPage() {
                                           <td key={c} data-cell={`${r}:${c}`}
                                             contentEditable={!isLocked(ov)} suppressContentEditableWarning
                                             onFocus={()=>setActiveCell(`${ov.id}:${r}:${c}`)}
-                                            onMouseDown={e=>e.stopPropagation()}
+                                            onPointerDown={e=>e.stopPropagation()}
                                             onClick={e=>e.stopPropagation()}
                                             onBlur={e=>tableSetCell(ov.id,r,c,{text:e.currentTarget.textContent||""})}
                                             style={{
@@ -4501,7 +4501,7 @@ export default function DocumentsPage() {
                                   </tbody>
                                 </table>
                                 {!isLocked(ov)&&(
-                                  <div className="dp-ov-table-ctrls" onMouseDown={e=>e.stopPropagation()}>
+                                  <div className="dp-ov-table-ctrls" onPointerDown={e=>e.stopPropagation()}>
                                     <button title="Add row"    onClick={e=>{e.stopPropagation();tableAddRow(ov.id);}}>+Row</button>
                                     <button title="Remove row" onClick={e=>{e.stopPropagation();tableDelRow(ov.id);}}>−Row</button>
                                     <button title="Add column"    onClick={e=>{e.stopPropagation();tableAddCol(ov.id);}}>+Col</button>
@@ -4513,7 +4513,7 @@ export default function DocumentsPage() {
                                   const cell=ov.tableData!.cells[r]?.[c];
                                   if(!cell) return null;
                                   return (
-                                    <div className="dp-ov-cell-bar" onMouseDown={e=>e.stopPropagation()}>
+                                    <div className="dp-ov-cell-bar" onPointerDown={e=>e.stopPropagation()}>
                                       <button className={cell.bold?"on":""} title="Bold" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{bold:!cell.bold});}}><b>B</b></button>
                                       <button className={cell.align==="left"?"on":""} title="Left" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"left"});}}>⬅</button>
                                       <button className={cell.align==="center"?"on":""} title="Center" onClick={e=>{e.stopPropagation();tableSetCell(ov.id,r,c,{align:"center"});}}>⬌</button>
@@ -4534,18 +4534,18 @@ export default function DocumentsPage() {
                               <div data-ovid={ov.id} ref={el=>{overlayRefs.current[ov.id]=el;}} contentEditable suppressContentEditableWarning
                                 className="dp-pdf-overlay-text"
                                 style={{fontSize:ov.fontSize||16,color:ov.color||"#1c1917",fontWeight:ov.bold?700:400,textDecoration:ov.underline?"underline":"none"}}
-                                onMouseDown={e=>{if(document.activeElement===e.currentTarget)e.stopPropagation();}}
+                                onPointerDown={e=>{if(document.activeElement===e.currentTarget)e.stopPropagation();}}
                                 onClick={e=>e.stopPropagation()}
                                 onBlur={e=>{const txt=e.currentTarget.textContent||"";setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,content:txt}:o));setSaveStatus("unsaved");}}
                               >{ov.content}</div>
                             )}
                             {!isLocked(ov)&&(ov.type==="text"||ov.type==="date")&&(
                               <div style={{position:"absolute",bottom:-22,left:0,display:"flex",alignItems:"center",gap:3,background:"rgba(0,0,0,0.7)",borderRadius:4,padding:"2px 5px",zIndex:13}}>
-                                <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,bold:!o.bold}:o));setSaveStatus("unsaved");}}
+                                <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,bold:!o.bold}:o));setSaveStatus("unsaved");}}
                                   title="Bold" style={{background:ov.bold?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 4px",borderRadius:3}}>B</button>
-                                <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,underline:!o.underline}:o));setSaveStatus("unsaved");}}
+                                <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,underline:!o.underline}:o));setSaveStatus("unsaved");}}
                                   title="Underline" style={{background:ov.underline?"#7c3aed":"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,textDecoration:"underline",cursor:"pointer",padding:"0 4px",borderRadius:3}}>U</button>
-                                <label title="Text colour" onMouseDown={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",cursor:"pointer"}}>
+                                <label title="Text colour" onPointerDown={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",cursor:"pointer"}}>
                                   <input type="color" value={ov.color||"#1c1917"} onClick={e=>e.stopPropagation()}
                                     onChange={e=>{const v=e.target.value;setDocxOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,color:v}:o));setSaveStatus("unsaved");}}
                                     style={{width:18,height:16,padding:0,border:"none",background:"none",cursor:"pointer"}}/>
@@ -4603,38 +4603,38 @@ export default function DocumentsPage() {
                       />
                       {/* Image overlays for new docs — draggable/resizable like PDF overlays */}
                       {newDocOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                        <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:isLocked(ov)?"default":"move",userSelect:"none",zIndex:10}}
+                        <div key={ov.id} style={{position:"absolute",left:`${ov.x}%`,top:`${ov.y}%`,cursor:isLocked(ov)?"default":"move",userSelect:"none",touchAction:"none",zIndex:10}}
                           onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"new");}}}
                           title={isLocked(ov)?"Placed by a previous recipient — cannot be moved or removed":""}
-                          onMouseDown={e=>{
+                          onPointerDown={e=>{
                             if(isLocked(ov))return; // locked: org view OR placed by an earlier signer
                             e.stopPropagation();
                             const startX=e.clientX,startY=e.clientY;
                             const startOx=ov.x,startOy=ov.y;
                             const parent=(e.currentTarget as HTMLElement).closest(".dp-page-body") as HTMLElement;
                             const rect=parent?.getBoundingClientRect()||{width:816,height:1056};
-                            const onMove=(ev:MouseEvent)=>{
+                            const onMove=(ev:PointerEvent)=>{
                               const dx=((ev.clientX-startX)/rect.width)*100;
                               const dy=((ev.clientY-startY)/rect.height)*100;
                               setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,x:Math.max(0,Math.min(90,startOx+dx)),y:Math.max(0,Math.min(95,startOy+dy))}:o));
                             };
                             const onUp=()=>{
-                              document.removeEventListener("mousemove",onMove);
-                              document.removeEventListener("mouseup",onUp);
+                              document.removeEventListener("pointermove",onMove);
+                              document.removeEventListener("pointerup",onUp);
                               setSaveStatus("unsaved");
                             };
-                            document.addEventListener("mousemove",onMove);
-                            document.addEventListener("mouseup",onUp);
+                            document.addEventListener("pointermove",onMove);
+                            document.addEventListener("pointerup",onUp);
                           }}>
                           {/* Resize/delete controls — hidden on locked overlays (prior signers' marks) */}
                           {!isLocked(ov) && <div style={{position:"absolute",top:-24,left:0,display:"flex",alignItems:"center",gap:4,background:"rgba(0,0,0,0.8)",borderRadius:4,padding:"3px 7px",zIndex:12,opacity:1}}
                             className="nd-img-ctrl">
-                            <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||20)+8)}:o));setSaveStatus("unsaved");}}
+                            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.min(120,(o.fontSize||20)+8)}:o));setSaveStatus("unsaved");}}
                               style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 2px"}}>+</button>
                             <span style={{color:"#ccc",fontSize:10,fontFamily:"monospace",minWidth:34,textAlign:"center"}}>{(ov.fontSize||20)*10}px</span>
-                            <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(4,(o.fontSize||20)-8)}:o));setSaveStatus("unsaved");}}
+                            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.map(o=>o.id===ov.id?{...o,fontSize:Math.max(4,(o.fontSize||20)-8)}:o));setSaveStatus("unsaved");}}
                               style={{background:"none",border:"none",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",padding:"0 2px"}}>−</button>
-                            <button onMouseDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}
+                            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();setNewDocOverlays(prev=>prev.filter(o=>o.id!==ov.id));setSaveStatus("unsaved");}}
                               style={{background:"#ef4444",border:"none",color:"#fff",fontSize:10,fontWeight:700,cursor:"pointer",padding:"0 3px",borderRadius:3,marginLeft:2}}>×</button>
                           </div>}
                           {(ov.type==="date"||ov.type==="text")?(
@@ -5057,7 +5057,7 @@ export default function DocumentsPage() {
                           <span style={{width:18,height:18,borderRadius:"50%",background:isFinal?"#16a34a":"var(--accent)",color:"#fff",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{i+1}</span>
                           <span style={{fontWeight:500,color:"var(--text)",maxWidth:80,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u?.email?.split("@")[0]||"?"}</span>
                           {isFinal&&<span style={{fontSize:9,background:"#dcfce7",color:"#16a34a",padding:"1px 4px",borderRadius:3,fontWeight:600}}>FINAL</span>}
-                          <button onMouseDown={e=>e.stopPropagation()} onClick={()=>setSelectedRoute(prev=>prev.filter(id=>id!==uid))}
+                          <button onPointerDown={e=>e.stopPropagation()} onClick={()=>setSelectedRoute(prev=>prev.filter(id=>id!==uid))}
                             style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:13,padding:"0 2px",lineHeight:1}}>×</button>
                         </div>
                         {i<selectedRoute.length-1&&<span style={{color:"var(--accent)",fontSize:14}}>→</span>}
