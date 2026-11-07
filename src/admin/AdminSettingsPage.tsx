@@ -51,6 +51,12 @@ function defaultModelFor(id: string): string {
   return AI_PROVIDERS.find(p => p.id === id)?.models[0] || "";
 }
 
+const CONVERT_PROVIDERS: { id: string; name: string; meta: string; keyEnv: string }[] = [
+  { id: "default",    name: "iLovePDF + ConvertAPI", meta: "Primary · iLovePDF (Office→PDF) + ConvertAPI (PDF→Office)", keyEnv: "ILOVEPDF_PUBLIC_KEY + CONVERTAPI_TOKEN" },
+  { id: "adobe",      name: "Adobe PDF Services",    meta: "Free 500 conversions/mo · both directions · no server needed", keyEnv: "ADOBE_CLIENT_ID + ADOBE_CLIENT_SECRET" },
+  { id: "onlyoffice", name: "OnlyOffice",            meta: "Backup · both directions · needs a Document Server (ONLYOFFICE_URL)", keyEnv: "ONLYOFFICE_URL" },
+];
+
 export default function AdminSettingsPage() {
   const [current, setCurrent]   = useState<Provider | null>(null); // saved value
   const [selected, setSelected] = useState<Provider>("flutterwave"); // pending choice
@@ -65,6 +71,12 @@ export default function AdminSettingsPage() {
   const [aiSaving, setAiSaving]     = useState(false);
   const [aiMsg, setAiMsg]           = useState<{ ok: boolean; text: string } | null>(null);
 
+  // ── Document conversion provider (Office→PDF, admin-switchable) ──
+  const [cvCurrent, setCvCurrent]   = useState<string>("default");
+  const [cvSelected, setCvSelected] = useState<string>("default");
+  const [cvSaving, setCvSaving]     = useState(false);
+  const [cvMsg, setCvMsg]           = useState<{ ok: boolean; text: string } | null>(null);
+
   useEffect(() => {
     const id = "set-styles";
     if (!document.getElementById(id)) {
@@ -76,7 +88,7 @@ export default function AdminSettingsPage() {
 
   async function load() {
     const { data } = await supabase.from("app_settings")
-      .select("key,value").in("key", ["active_payment_provider", "active_ai_provider", "active_ai_model"]);
+      .select("key,value").in("key", ["active_payment_provider", "active_ai_provider", "active_ai_model", "active_convert_provider"]);
     const m: Record<string, string> = {};
     for (const r of (data || [])) m[r.key] = r.value;
 
@@ -89,6 +101,10 @@ export default function AdminSettingsPage() {
     const model = m["active_ai_model"] || defaultModelFor(prov);
     setAiCurrent(prov); setAiSelected(prov);
     setAiModel(model);  setAiModelSaved(model);
+
+    const cp = (m["active_convert_provider"] || "default").toLowerCase();
+    const cprov = CONVERT_PROVIDERS.find(x => x.id === cp) ? cp : "default";
+    setCvCurrent(cprov); setCvSelected(cprov);
   }
 
   function pickProvider(id: string) {
@@ -117,6 +133,19 @@ export default function AdminSettingsPage() {
     setAiCurrent(aiSelected); setAiModelSaved(model); setAiModel(model);
     const name = AI_PROVIDERS.find(x => x.id === aiSelected)?.name || aiSelected;
     setAiMsg({ ok: true, text: `AI drafting now uses ${name} (${model}). Takes effect on the next draft.` });
+  }
+
+  async function saveCv() {
+    if (cvSelected === cvCurrent) return;
+    setCvSaving(true); setCvMsg(null);
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase.from("app_settings")
+      .upsert({ key: "active_convert_provider", value: cvSelected, updated_at: new Date().toISOString(), updated_by: user?.id ?? null }, { onConflict: "key" });
+    setCvSaving(false);
+    if (error) { setCvMsg({ ok: false, text: "Could not save: " + error.message }); return; }
+    setCvCurrent(cvSelected);
+    const name = CONVERT_PROVIDERS.find(x => x.id === cvSelected)?.name || cvSelected;
+    setCvMsg({ ok: true, text: `Office→PDF now prefers ${name}. Effective immediately; the other is used automatically if it fails.` });
   }
 
   async function save() {
@@ -240,6 +269,44 @@ export default function AdminSettingsPage() {
                 : "Save AI provider"}
             </button>
             {aiMsg && <span className={`set-msg ${aiMsg.ok ? "ok" : "err"}`}>{aiMsg.text}</span>}
+          </div>
+        </div>
+
+        {/* ── Document Conversion Provider (Office → PDF) ── */}
+        <div className="set-card">
+          <div className="set-card-head">
+            <div className="set-card-title">Document Conversion — Office → PDF</div>
+          </div>
+          <div className="set-card-desc">
+            Choose which service converts uploaded Office files (Word, Excel, PowerPoint) to PDF.
+            If the selected one fails, the other is tried automatically, so a single outage won't
+            break uploads. Switching takes effect immediately — no deploy needed.
+          </div>
+          <div className="set-providers">
+            {CONVERT_PROVIDERS.map(p => (
+              <button key={p.id}
+                className={`set-prov${cvSelected === p.id ? " active" : ""}`}
+                onClick={() => setCvSelected(p.id)}>
+                <div className="set-prov-name">
+                  {p.name}
+                  <span className={`set-prov-badge ${cvCurrent === p.id ? "set-badge-live" : "set-badge-idle"}`}>
+                    {cvCurrent === p.id ? "PREFERRED" : "FALLBACK"}
+                  </span>
+                </div>
+                <div className="set-prov-meta">{p.meta}</div>
+              </button>
+            ))}
+          </div>
+          <div className="set-note">
+            Secrets needed in Supabase → Edge Functions → Secrets for this option:&nbsp;
+            <strong>{CONVERT_PROVIDERS.find(p => p.id === cvSelected)?.keyEnv}</strong>.
+            OnlyOffice also needs a running Document Server. For automatic fallback, configure both options.
+          </div>
+          <div className="set-foot">
+            <button className="set-btn primary" onClick={saveCv} disabled={cvSaving || cvSelected === cvCurrent}>
+              {cvSaving ? "Saving…" : cvSelected === cvCurrent ? "No changes" : "Save conversion provider"}
+            </button>
+            {cvMsg && <span className={`set-msg ${cvMsg.ok ? "ok" : "err"}`}>{cvMsg.text}</span>}
           </div>
         </div>
       </div>
