@@ -270,7 +270,7 @@ export default function DrivePage() {
         return;
       }
       const { data } = await supabase.from("documents").select("title,content").eq("id", item.document_id).maybeSingle();
-      const schema = ((data?.content as any)?.schema as FormSchema) || { title: data?.title || item.name, fields: [] };
+      const schema = ((data?.content as any)?.schema as FormSchema) || { title: data?.title || item.name, objects: [] };
       setEditFormDocId(item.document_id);
       setEditFormSchema(schema);
       setEditFormTitle(data?.title || item.name);
@@ -369,6 +369,11 @@ export default function DrivePage() {
   // linked drive_items entry at the root; we move it to the current folder and
   // tag it as a form so it reopens in the builder.
   async function saveForm(schema: FormSchema, title: string) {
+    if (role === "organization_member") {
+      setMsg({ type: "error", text: "Organisation members can't create forms." });
+      setShowFormBuilder(false);
+      return;
+    }
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     setFormSaving(true);
@@ -877,10 +882,12 @@ export default function DrivePage() {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
               New Folder
             </button>
-            <button className="dr-btn ghost" onClick={() => { setEditFormDocId(null); setEditFormSchema(null); setEditFormTitle(""); setShowFormBuilder(true); }} disabled={busy}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
-              New Form
-            </button>
+            {(role === "individual" || role === "organization") && (
+              <button className="dr-btn ghost" onClick={() => { setEditFormDocId(null); setEditFormSchema(null); setEditFormTitle(""); setShowFormBuilder(true); }} disabled={busy}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+                New Form
+              </button>
+            )}
             <button className="dr-btn primary" onClick={() => fileInputRef.current?.click()} disabled={busy}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               Upload
@@ -967,7 +974,10 @@ export default function DrivePage() {
                   </button>
                   {menuFor === item.id && (
                     <div className="dr-menu" onClick={e => e.stopPropagation()}>
-                      {item.kind === "file" && (
+                      {item.kind === "file" && item.mime_type === FORM_MIME && (
+                        <button className="dr-menu-item" onClick={() => { setMenuFor(null); openDriveDocument(item); }}>✏️ Edit form</button>
+                      )}
+                      {item.kind === "file" && item.mime_type !== FORM_MIME && (
                         <button className="dr-menu-item" onClick={() => { setMenuFor(null); downloadFile(item); }}>⬇️ Download</button>
                       )}
                       {item.kind === "folder" && (
