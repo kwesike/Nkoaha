@@ -263,18 +263,10 @@ export default function DrivePage() {
       setMsg({ type: "error", text: "This file isn't linked to an editable document. Re-upload it to the Drive." });
       return;
     }
-    // Forms open in the builder (owner) rather than the document viewer.
+    // Clicking a form opens it in the document editor (fill & send). The design
+    // is edited via the "Edit design" menu item.
     if (item.mime_type === FORM_MIME) {
-      if (item.owner_id !== myUserId) {
-        setMsg({ type: "error", text: "Only the form's owner can edit it here." });
-        return;
-      }
-      const { data } = await supabase.from("documents").select("title,content").eq("id", item.document_id).maybeSingle();
-      const schema = ((data?.content as any)?.schema as FormSchema) || { title: data?.title || item.name, objects: [] };
-      setEditFormDocId(item.document_id);
-      setEditFormSchema(schema);
-      setEditFormTitle(data?.title || item.name);
-      setShowFormBuilder(true);
+      openFormInEditor(item);
       return;
     }
     // Decide how to open:
@@ -311,6 +303,28 @@ export default function DrivePage() {
       role === "organization_member" ? "/dashboard/member" :
       "/dashboard/individual";
     navigate(dest, { state: { openDocId: item.document_id, readOnly, canForkEdit, myFolderId, sourceDriveItemId: item.id } });
+  }
+
+  // Open a form in the document editor (it becomes a fillable PDF there).
+  function openFormInEditor(item: DriveItem) {
+    if (!item.document_id) return;
+    const dest =
+      role === "organization" ? "/dashboard/organization" :
+      role === "organization_member" ? "/dashboard/member" :
+      "/dashboard/individual";
+    navigate(dest, { state: { openDocId: item.document_id } });
+  }
+
+  // Open a form's design in the drag-and-drop builder (owner only).
+  async function openFormBuilder(item: DriveItem) {
+    if (!item.document_id) return;
+    if (item.owner_id !== myUserId) { setMsg({ type: "error", text: "Only the form's owner can edit its design." }); return; }
+    const { data } = await supabase.from("documents").select("title,content").eq("id", item.document_id).maybeSingle();
+    const schema = ((data?.content as any)?.schema as FormSchema) || { title: data?.title || item.name, objects: [] };
+    setEditFormDocId(item.document_id);
+    setEditFormSchema(schema);
+    setEditFormTitle(data?.title || item.name);
+    setShowFormBuilder(true);
   }
 
   const loadUsage = useCallback(async () => {
@@ -975,7 +989,12 @@ export default function DrivePage() {
                   {menuFor === item.id && (
                     <div className="dr-menu" onClick={e => e.stopPropagation()}>
                       {item.kind === "file" && item.mime_type === FORM_MIME && (
-                        <button className="dr-menu-item" onClick={() => { setMenuFor(null); openDriveDocument(item); }}>✏️ Edit form</button>
+                        <>
+                          <button className="dr-menu-item" onClick={() => { setMenuFor(null); openFormInEditor(item); }}>📤 Fill &amp; send (editor)</button>
+                          {item.owner_id === myUserId && (
+                            <button className="dr-menu-item" onClick={() => { setMenuFor(null); openFormBuilder(item); }}>✏️ Edit design</button>
+                          )}
+                        </>
                       )}
                       {item.kind === "file" && item.mime_type !== FORM_MIME && (
                         <button className="dr-menu-item" onClick={() => { setMenuFor(null); downloadFile(item); }}>⬇️ Download</button>

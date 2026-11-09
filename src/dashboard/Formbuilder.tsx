@@ -407,7 +407,9 @@ export function formToHtml(schema: FormSchema): string {
     pages.push(`<div class="pg">${p === 0 ? logo : ""}${objs.map(objHtml).join("")}</div>`);
   }
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(schema.title)}</title>
-    <style>@page{size:A4;margin:0}body{margin:0;font-family:'DM Sans',Arial,sans-serif}
+    <style>@page{size:A4;margin:0}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{margin:0;font-family:'DM Sans',Arial,sans-serif}
     .pg{position:relative;width:210mm;height:297mm;overflow:hidden;page-break-after:always}
     .pg:last-child{page-break-after:auto}</style></head>
     <body>${pages.join("")}</body></html>`;
