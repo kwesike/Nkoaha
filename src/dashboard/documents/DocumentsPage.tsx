@@ -114,6 +114,11 @@ const STYLES = `
   .dp-pdf-stage{position:relative;line-height:0;display:block;max-width:100%}
   .dp-pdf-canvas{display:block;max-width:100%;height:auto}
   .dp-pdf-overlay-item{position:absolute;cursor:move;user-select:none;touch-action:none;z-index:10;display:flex;align-items:flex-start}
+  .dp-summary-body h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 6px;color:var(--accent)}
+  .dp-summary-body p{margin:7px 0}
+  .dp-summary-body ul,.dp-summary-body ol{margin:6px 0 6px 18px;padding:0}
+  .dp-summary-body li{margin:4px 0}
+  .dp-summary-body strong{color:var(--text,#1c1917)}
   .dp-overlay-img{display:block;object-fit:contain;pointer-events:none;border-radius:3px;max-width:400px;}
   .dp-pdf-overlay-item:hover .dp-pdf-overlay-del{opacity:1}
   .dp-pdf-overlay-del{opacity:0;position:absolute;top:-8px;right:-8px;width:16px;height:16px;background:#ef4444;color:#fff;border:none;border-radius:50%;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:opacity .15s;z-index:11}
@@ -1867,6 +1872,12 @@ export default function DocumentsPage() {
   const [scanFiles, setScanFiles] = useState<File[]>([]);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanErr, setScanErr] = useState<string|null>(null);
+  // ── AI document summary ──
+  const [showSummary, setShowSummary]       = useState(false);
+  const [summaryHtml, setSummaryHtml]       = useState("");
+  const [summaryBusy, setSummaryBusy]       = useState(false);
+  const [summaryErr, setSummaryErr]         = useState<string|null>(null);
+  const [summaryRemaining, setSummaryRemaining] = useState<number|null>(null);
   const [merging, setMerging] = useState(false);
   const [pendingMergeFile, setPendingMergeFile] = useState<File|null>(null); // file awaiting replace/new choice
   const mergeInputRef = useRef<HTMLInputElement|null>(null);
@@ -2502,6 +2513,70 @@ export default function DocumentsPage() {
   }
 
   // ── Convert handwritten page photos/scans into an editable document ──
+  // ── Summarise the open document ──────────────────────────────────────────
+  // Pulls text from whichever format is open and sends it to the
+  // summarize-document edge function (same AI switcher + free-tier gate).
+  function tiptapToText(node:any):string{
+    if(!node) return "";
+    let out="";
+    const walk=(n:any)=>{
+      if(!n) return;
+      if(n.type==="text" && typeof n.text==="string"){ out+=n.text; return; }
+      if(Array.isArray(n.content)) n.content.forEach(walk);
+      if(["paragraph","heading","listItem","blockquote","tableRow"].includes(n.type)) out+="\n";
+    };
+    walk(node);
+    return out;
+  }
+  async function extractDocText():Promise<string>{
+    if(!activeDoc) return "";
+    if(activeDoc.format==="new"){
+      const body=editorPages.map(p=>tiptapToText(p)).join("\n\n");
+      const extra=newDocOverlays.filter(o=>o.type==="text"||o.type==="date").map(o=>(o as any).text||"").filter(Boolean).join("\n");
+      return `${header?header+"\n\n":""}${body}${extra?"\n\n"+extra:""}${footer?"\n\n"+footer:""}`.replace(/\n{3,}/g,"\n\n").trim();
+    }
+    if(activeDoc.format==="docx"){
+      const tmp=document.createElement("div"); tmp.innerHTML=docxHtmlPages.join("\n");
+      return (tmp.textContent||"").replace(/\n{3,}/g,"\n\n").replace(/[ \t]{2,}/g," ").trim();
+    }
+    if(activeDoc.format==="pdf" && pdfDoc){
+      let txt="";
+      const n=pdfDoc.numPages||0;
+      for(let i=1;i<=n;i++){
+        try{
+          const page=await pdfDoc.getPage(i);
+          const tc=await page.getTextContent();
+          txt += (tc.items||[]).map((it:any)=>it.str||"").join(" ")+"\n\n";
+        }catch(_e){/* skip unreadable page */}
+      }
+      return txt.replace(/\n{3,}/g,"\n\n").trim();
+    }
+    return "";
+  }
+  async function summarizeDocument(){
+    if(!activeDoc) return;
+    setShowSummary(true); setSummaryBusy(true); setSummaryErr(null); setSummaryHtml("");
+    try{
+      const text=await extractDocText();
+      if(!text || text.length<20){
+        throw new Error("There isn't enough readable text to summarise. If this is a scanned PDF with no text layer, it has no selectable text to read.");
+      }
+      const{data:{session}}=await supabase.auth.getSession();
+      const supaUrl=(supabase as any).supabaseUrl||import.meta.env.VITE_SUPABASE_URL;
+      const resp=await fetch(`${supaUrl}/functions/v1/summarize-document`,{
+        method:"POST",
+        headers:{ "Content-Type":"application/json", Authorization:`Bearer ${session?.access_token||""}` },
+        body:JSON.stringify({ text, title:docTitle||activeDoc.title||"" }),
+      });
+      const result=await resp.json().catch(()=>({}));
+      if(!resp.ok){ throw new Error(result?.error || `Summary failed (${resp.status}).`); }
+      setSummaryHtml(result?.summary||"");
+      if(typeof result?.freeRemaining==="number") setSummaryRemaining(result.freeRemaining);
+    }catch(e:any){
+      setSummaryErr(e?.message || "Could not summarise this document.");
+    }finally{ setSummaryBusy(false); }
+  }
+
   // Uses the handwriting-ocr edge function (vision model). Paid feature, also
   // enforced server-side. On success, creates a new editable doc from the HTML.
   async function convertHandwriting(){
@@ -3961,6 +4036,11 @@ export default function DocumentsPage() {
               <input className="dp-title-input" value={docTitle} onChange={e=>handleTitleChange(e.target.value)} placeholder="Untitled" readOnly={(activeDoc as any).isOrgDoc||docStatus!=="draft"}/>
               {!(activeDoc as any).isOrgDoc && <span className={`dp-save-badge ${saveStatus}`}>{saveStatus==="saved"?"● Saved":saveStatus==="saving"?"⟳ Saving…":"● Unsaved"}</span>}
               {activeDoc.format!=="new"&&<span style={{fontSize:10,fontFamily:"var(--mono)",background:"var(--accent-light)",color:"var(--accent)",padding:"2px 8px",borderRadius:20}}>{activeDoc.format.toUpperCase()}</span>}
+              {/* AI summary — available for any open document, all states */}
+              <button className="dp-btn dp-btn-ghost" onClick={summarizeDocument} disabled={summaryBusy} title="AI summary of this document" style={{flexShrink:0}}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4z"/><line x1="5" y1="19" x2="12" y2="19"/><line x1="16" y1="19" x2="19" y2="19"/></svg>
+                {summaryBusy?"Summarizing…":"Summary"}
+              </button>
               {/* ── Organisation Document: READ-ONLY (Download + Print only) ── */}
               {(activeDoc as any).isOrgDoc ? (
                 <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
@@ -4868,6 +4948,40 @@ export default function DocumentsPage() {
                   ? <><div className="dp-spinner" style={{width:14,height:14,borderWidth:2}}/> Drafting…</>
                   : <>Generate draft</>}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSummary&&(
+        <div className="dp-modal-backdrop" onClick={()=>!summaryBusy&&setShowSummary(false)}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{width:560,maxWidth:"94vw",maxHeight:"86vh",display:"flex",flexDirection:"column"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4z"/><line x1="5" y1="20" x2="12" y2="20"/><line x1="16" y1="20" x2="19" y2="20"/></svg>
+              <div style={{fontSize:16,fontWeight:700}}>Document summary</div>
+            </div>
+            <div style={{fontSize:12.5,color:"var(--muted)",marginBottom:12}}>
+              AI-generated from this document&apos;s text. Review it against the original — it can miss nuance and is not legal or financial advice.
+            </div>
+            {summaryBusy&&(
+              <div style={{display:"flex",alignItems:"center",gap:10,padding:"26px 4px",color:"var(--muted)",fontSize:13}}>
+                <div className="dp-spinner" style={{width:18,height:18,borderWidth:2}}/> Reading the document and writing a summary&hellip;
+              </div>
+            )}
+            {summaryErr&&(
+              <div style={{padding:"10px 12px",borderRadius:8,fontSize:12.5,background:"var(--red-bg,#fee2e2)",color:"var(--red,#991b1b)"}}>{summaryErr}</div>
+            )}
+            {!summaryBusy&&!summaryErr&&summaryHtml&&(
+              <div className="dp-summary-body" style={{overflowY:"auto",fontSize:13.5,lineHeight:1.55,paddingRight:4}} dangerouslySetInnerHTML={{__html:summaryHtml}}/>
+            )}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginTop:16}}>
+              <span style={{fontSize:11,color:"var(--muted)"}}>{summaryRemaining!=null?`${summaryRemaining} free summaries left today`:""}</span>
+              <div style={{display:"flex",gap:8}}>
+                {summaryHtml&&!summaryBusy&&(
+                  <button className="dp-btn dp-btn-ghost" onClick={()=>{const t=document.createElement("div");t.innerHTML=summaryHtml;navigator.clipboard?.writeText((t.textContent||"").trim());}}>Copy</button>
+                )}
+                <button className="dp-btn dp-btn-primary" onClick={()=>setShowSummary(false)} disabled={summaryBusy}>Done</button>
+              </div>
             </div>
           </div>
         </div>
