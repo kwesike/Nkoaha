@@ -2,6 +2,9 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "./../lib/supabase";
 import DashboardLayout from "./layout/DashboardLayout";
+import FormBuilder, { type FormSchema } from "./Formbuilder";
+
+const FORM_MIME = "application/nkoaha-form";
 
 type Kind = "folder" | "file";
 interface DriveItem {
@@ -88,6 +91,7 @@ function fmtBytes(b: number): string {
 
 function fileIcon(name: string, mime: string | null) {
   const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (mime === "application/nkoaha-form") return { emoji: "📝", color: "#7c3aed" };
   if (mime?.startsWith("image/") || ["png","jpg","jpeg","gif","webp","svg"].includes(ext))
     return { emoji: "🖼️", color: "#0d9488" };
   if (ext === "pdf") return { emoji: "📕", color: "#dc2626" };
@@ -112,6 +116,12 @@ export default function DrivePage() {
   const [menuFor, setMenuFor]   = useState<string | null>(null);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [folderName, setFolderName] = useState("");
+  // ── Form builder ──
+  const [showFormBuilder, setShowFormBuilder] = useState(false);
+  const [formSaving, setFormSaving]           = useState(false);
+  const [editFormDocId, setEditFormDocId]     = useState<string | null>(null);
+  const [editFormSchema, setEditFormSchema]   = useState<FormSchema | null>(null);
+  const [editFormTitle, setEditFormTitle]     = useState("");
   const [renameItem, setRenameItem] = useState<DriveItem | null>(null);
   const [renameVal, setRenameVal]   = useState("");
   const [moveItem, setMoveItem]     = useState<DriveItem | null>(null);
@@ -253,6 +263,20 @@ export default function DrivePage() {
       setMsg({ type: "error", text: "This file isn't linked to an editable document. Re-upload it to the Drive." });
       return;
     }
+    // Forms open in the builder (owner) rather than the document viewer.
+    if (item.mime_type === FORM_MIME) {
+      if (item.owner_id !== myUserId) {
+        setMsg({ type: "error", text: "Only the form's owner can edit it here." });
+        return;
+      }
+      const { data } = await supabase.from("documents").select("title,content").eq("id", item.document_id).maybeSingle();
+      const schema = ((data?.content as any)?.schema as FormSchema) || { title: data?.title || item.name, fields: [] };
+      setEditFormDocId(item.document_id);
+      setEditFormSchema(schema);
+      setEditFormTitle(data?.title || item.name);
+      setShowFormBuilder(true);
+      return;
+    }
     // Decide how to open:
     //  • Your own document → editable (restore-on-open).
     //  • Granted 'edit' → open READ-ONLY but offer "Edit a copy" (forks to the
@@ -339,6 +363,42 @@ export default function DrivePage() {
     const c = crumbs.slice(0, idx + 1);
     setCrumbs(c);
     loadItems(c[c.length - 1].id);
+  }
+
+  // Save a form as a `documents` row (format "form"). The DB trigger makes a
+  // linked drive_items entry at the root; we move it to the current folder and
+  // tag it as a form so it reopens in the builder.
+  async function saveForm(schema: FormSchema, title: string) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    setFormSaving(true);
+    try {
+      const payload = { kind: "form", version: 1, schema };
+      if (editFormDocId) {
+        const { error } = await supabase.from("documents")
+          .update({ title, content: payload, updated_at: new Date().toISOString() }).eq("id", editFormDocId);
+        if (error) throw new Error(error.message);
+        await supabase.from("drive_items").update({ name: title }).eq("document_id", editFormDocId);
+      } else {
+        const { data: docRow, error } = await supabase.from("documents").insert({
+          owner_id: user.id, sender_id: user.id, uploaded_by: user.id,
+          owner_type: orgId ? "organization" : "individual",
+          organization_id: orgId,
+          document_kind: "form", format: "form",
+          title, content: payload, file_url: "", status: "draft", pages: 1,
+        }).select("id").single();
+        if (error || !docRow) throw new Error(error?.message || "Could not save the form.");
+        await supabase.from("drive_items")
+          .update({ parent_id: currentFolder, name: title, mime_type: FORM_MIME })
+          .eq("document_id", docRow.id);
+      }
+      setShowFormBuilder(false); setEditFormDocId(null); setEditFormSchema(null); setEditFormTitle("");
+      await loadItems(currentFolder);
+    } catch (e: any) {
+      setMsg({ type: "error", text: e?.message || "Could not save the form." });
+    } finally {
+      setFormSaving(false);
+    }
   }
 
   async function createFolder() {
@@ -817,6 +877,10 @@ export default function DrivePage() {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
               New Folder
             </button>
+            <button className="dr-btn ghost" onClick={() => { setEditFormDocId(null); setEditFormSchema(null); setEditFormTitle(""); setShowFormBuilder(true); }} disabled={busy}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="4" y="3" width="16" height="18" rx="2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="12" y2="16"/></svg>
+              New Form
+            </button>
             <button className="dr-btn primary" onClick={() => fileInputRef.current?.click()} disabled={busy}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               Upload
@@ -1090,6 +1154,15 @@ export default function DrivePage() {
         )}
 
       </div>
+
+      <FormBuilder
+        open={showFormBuilder}
+        initialSchema={editFormSchema}
+        initialTitle={editFormTitle}
+        saving={formSaving}
+        onClose={() => { setShowFormBuilder(false); setEditFormDocId(null); setEditFormSchema(null); setEditFormTitle(""); }}
+        onSave={saveForm}
+      />
     </DashboardLayout>
   );
 }

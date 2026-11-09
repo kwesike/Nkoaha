@@ -796,7 +796,7 @@ export default function DocumentsPage() {
       const [ownedRes, routedRes] = await Promise.all([
         supabase.from("documents")
           .select("id,title,file_url,document_kind,pages,status,format,pdf_url,pdf_ready")
-          .eq("owner_id",user.id).neq("status","deleted").order("created_at",{ascending:false}),
+          .eq("owner_id",user.id).neq("status","deleted").neq("document_kind","form").order("created_at",{ascending:false}),
         supabase.from("document_routes")
           .select("document_id")
           .eq("recipient_id",user.id),
@@ -1166,7 +1166,7 @@ export default function DocumentsPage() {
       if(u2){
         const{data:owned}=await supabase.from("documents")
           .select("id,title,file_url,document_kind,pages,status,format,pdf_url,pdf_ready")
-          .eq("owner_id",u2.id).neq("status","deleted").order("created_at",{ascending:false});
+          .eq("owner_id",u2.id).neq("status","deleted").neq("document_kind","form").order("created_at",{ascending:false});
         setDocuments((owned||[]).map((d:any)=>({
           id:d.id,title:d.title,fileUrl:d.file_url||"",
           format:d.format||(d.document_kind==="upload"?"pdf":"new"),pages:d.pages||1,
@@ -3547,6 +3547,50 @@ export default function DocumentsPage() {
   //   • PDF  → downloads the actual .pdf file
   //   • DOCX → downloads the actual .docx file
   //   • new (editor) → generated as a .pdf (it has no original file)
+  // ── Certification helpers (Feature 3) ────────────────────────────────────
+  function bytesToB64(bytes:Uint8Array):string{
+    let bin=""; const chunk=0x8000;
+    for(let i=0;i<bytes.length;i+=chunk){ bin+=String.fromCharCode.apply(null, Array.from(bytes.subarray(i,i+chunk)) as any); }
+    return btoa(bin);
+  }
+  function b64ToBytes(b64:string):Uint8Array{
+    const bin=atob(b64); const u=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u;
+  }
+  // A signed document = a signature annotation was placed, or it's finalised.
+  function docHasSignature():boolean{
+    return pdfOverlays.some(o=>o.type==="signature")
+        || docxOverlays.some(o=>o.type==="signature")
+        || newDocOverlays.some(o=>o.type==="signature")
+        || docStatus==="signed" || docStatus==="completed";
+  }
+  // Download PDF bytes. If the document carries a signature, certify first so
+  // the downloaded file is flattened, sealed, and tamper-evident (edits break
+  // the signature). Falls back to the plain file if certification is down.
+  async function deliverPdf(bytes:Uint8Array, filename:string){
+    let outBytes=bytes;
+    if(docHasSignature()){
+      try{
+        const{data:{session}}=await supabase.auth.getSession();
+        const supaUrl=(supabase as any).supabaseUrl||import.meta.env.VITE_SUPABASE_URL;
+        const resp=await fetch(`${supaUrl}/functions/v1/certify-pdf`,{
+          method:"POST",
+          headers:{ "Content-Type":"application/json", Authorization:`Bearer ${session?.access_token||""}` },
+          body:JSON.stringify({ pdf:bytesToB64(bytes), documentId:activeDoc?.id||null, title:docTitle||activeDoc?.title||"", signerName:session?.user?.email||"" }),
+        });
+        const result=await resp.json().catch(()=>({}));
+        if(resp.ok && result?.pdf){ outBytes=b64ToBytes(result.pdf); }
+        else { console.warn("certify-pdf:", result?.error||resp.status); }
+      }catch(e){ console.warn("certify-pdf error", e); }
+    }
+    const ab=outBytes.buffer.slice(outBytes.byteOffset, outBytes.byteOffset+outBytes.byteLength) as ArrayBuffer;
+    const blob=new Blob([ab],{type:"application/pdf"});
+    const objUrl=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=objUrl; a.download=filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(objUrl);
+  }
+
   const handleDownloadDoc=async()=>{
     if(!activeDoc) return;
     const safeTitle=(docTitle||"document").replace(/[<>"&/\\]/g,"_");
@@ -3590,7 +3634,9 @@ export default function DocumentsPage() {
           if(drawH>pageH){ const h=pageH,w=h/ar; pdf.addImage(pages[i],"JPEG",(pageW-w)/2,0,w,h); }
           else pdf.addImage(pages[i],"JPEG",0,0,pageW,drawH);
         }
-        pdf.save(`${safeTitle}.pdf`);
+        // Certify-on-download when signed; otherwise a plain flattened PDF.
+        const ab=pdf.output("arraybuffer");
+        await deliverPdf(new Uint8Array(ab), `${safeTitle}.pdf`);
       }
       else{
         // Editable "new" document → let the user pick PDF or DOCX.
