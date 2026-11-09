@@ -16,6 +16,7 @@ export type FormObjType =
 export interface FormObject {
   id: string;
   type: FormObjType;
+  page?: number;                                 // 0-based page index
   x: number; y: number; w: number; h: number;   // % of page
   label?: string;
   placeholder?: string;
@@ -30,6 +31,7 @@ export interface FormObject {
 export interface FormSchema {
   title: string;
   logo?: string;
+  pageCount?: number;
   objects: FormObject[];
 }
 
@@ -84,12 +86,12 @@ function defaults(type: FormObjType, n: number): FormObject {
 
 // Convert a legacy stacked-field schema (fields[]) to canvas objects.
 function migrate(schema: any): FormObject[] {
-  if (schema?.objects) return schema.objects as FormObject[];
+  if (schema?.objects) return (schema.objects as FormObject[]).map(o => ({ ...o, page: o.page || 0 }));
   if (Array.isArray(schema?.fields)) {
     let y = 6;
     return schema.fields.map((f: any) => {
       const h = f.type === "longtext" ? 14 : (f.type === "radio" || f.type === "checkbox") ? 12 : f.type === "heading" ? 6 : 7;
-      const o: FormObject = { id: uid(), type: f.type, x: 8, y, w: f.width === "half" ? 44 : 84, h, label: f.label, placeholder: f.placeholder, required: f.required, options: f.options, src: f.src };
+      const o: FormObject = { id: uid(), type: f.type, page: 0, x: 8, y, w: f.width === "half" ? 44 : 84, h, label: f.label, placeholder: f.placeholder, required: f.required, options: f.options, src: f.src };
       y += h + 2;
       return o;
     });
@@ -105,6 +107,13 @@ const STYLES = `
   .fb-btn.ghost{background:transparent;color:#78716c;border-color:#e7e4df}.fb-btn.ghost:hover{background:#f5f3ef}
   .fb-btn.primary{background:#7c3aed;color:#fff}.fb-btn.primary:hover{background:#5b21b6}
   .fb-btn:disabled{opacity:.55;cursor:not-allowed}
+  .fb-pagebar{display:flex;align-items:center;justify-content:center;gap:8px;padding:6px;background:#fff;border-bottom:1px solid #e7e4df;flex-shrink:0}
+  .fb-pglabel{font-size:12.5px;font-weight:600;color:#44403c;min-width:98px;text-align:center}
+  .fb-pgbtn{border:1px solid #e7e4df;background:#fff;border-radius:7px;padding:5px 9px;font-size:12px;cursor:pointer;color:#57534e}
+  .fb-pgbtn.wide{font-weight:600}
+  .fb-pgbtn.danger{color:#dc2626;border-color:#fecaca}
+  .fb-pgbtn:disabled{opacity:.4;cursor:not-allowed}
+  .fb-pgbtn:not(:disabled):hover{background:#f5f3ef}
   .fb-body{flex:1;display:flex;min-height:0;overflow:hidden}
   .fb-palette{width:168px;flex-shrink:0;background:#fff;border-right:1px solid #e7e4df;padding:10px;overflow-y:auto}
   .fb-palette h4{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#a8a29e;margin:10px 0 7px}
@@ -159,6 +168,8 @@ export default function FormBuilder({ open, initialSchema, initialTitle, saving,
   const [logo, setLogo]       = useState<string | undefined>();
   const [objects, setObjects] = useState<FormObject[]>([]);
   const [selId, setSelId]     = useState<string | null>(null);
+  const [pageCount, setPageCount] = useState(1);
+  const [curPage, setCurPage]     = useState(0);
   const pageRef   = useRef<HTMLDivElement>(null);
   const logoInput = useRef<HTMLInputElement>(null);
   const imgInput  = useRef<HTMLInputElement>(null);
@@ -168,7 +179,11 @@ export default function FormBuilder({ open, initialSchema, initialTitle, saving,
     if (!open) return;
     setTitle(initialTitle || initialSchema?.title || "Untitled form");
     setLogo(initialSchema?.logo);
-    setObjects(migrate(initialSchema));
+    const objs = migrate(initialSchema);
+    setObjects(objs);
+    const maxPage = objs.reduce((m, o) => Math.max(m, o.page || 0), 0);
+    setPageCount(Math.max(initialSchema?.pageCount || 1, maxPage + 1));
+    setCurPage(0);
     setSelId(null);
   }, [open]); // eslint-disable-line
 
@@ -177,9 +192,18 @@ export default function FormBuilder({ open, initialSchema, initialTitle, saving,
   const sel = objects.find(o => o.id === selId) || null;
   const update = (id: string, patch: Partial<FormObject>) => setObjects(prev => prev.map(o => o.id === id ? { ...o, ...patch } : o));
   const add = (type: FormObjType) => {
-    const o = defaults(type, objects.length);
+    const o = { ...defaults(type, objects.filter(x => (x.page || 0) === curPage).length), page: curPage };
     setObjects(prev => [...prev, o]); setSelId(o.id);
     if (type === "image") { imgFor.current = o.id; setTimeout(() => imgInput.current?.click(), 40); }
+  };
+  const addPage = () => { const n = pageCount; setPageCount(pageCount + 1); setCurPage(n); setSelId(null); };
+  const deletePage = () => {
+    if (pageCount <= 1) return;
+    const p = curPage;
+    setObjects(prev => prev.filter(o => (o.page || 0) !== p).map(o => ({ ...o, page: (o.page || 0) > p ? (o.page || 0) - 1 : (o.page || 0) })));
+    setPageCount(c => c - 1);
+    setCurPage(Math.max(0, p - 1));
+    setSelId(null);
   };
   const removeObj = (id: string) => { setObjects(prev => prev.filter(o => o.id !== id)); if (selId === id) setSelId(null); };
   const dup = (id: string) => { const o = objects.find(x => x.id === id); if (!o) return; const c = { ...o, id: uid(), x: clamp(o.x + 3, 0, 100 - o.w), y: clamp(o.y + 3, 0, 100 - o.h) }; setObjects(prev => [...prev, c]); setSelId(c.id); };
@@ -204,8 +228,8 @@ export default function FormBuilder({ open, initialSchema, initialTitle, saving,
     window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onUp);
   };
 
-  const save = () => onSave({ title: title.trim() || "Untitled form", logo, objects }, title.trim() || "Untitled form");
-  const downloadPdf = () => printForm({ title, logo, objects });
+  const save = () => onSave({ title: title.trim() || "Untitled form", logo, pageCount, objects }, title.trim() || "Untitled form");
+  const downloadPdf = () => printForm({ title, logo, pageCount, objects });
 
   return (
     <div className="fb-overlay">
@@ -218,6 +242,15 @@ export default function FormBuilder({ open, initialSchema, initialTitle, saving,
         <button className="fb-btn primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save form"}</button>
         <input ref={logoInput} type="file" accept="image/*" hidden onChange={e => { const f = e.target.files?.[0]; if (f) readImg(f, setLogo); e.currentTarget.value = ""; }} />
         <input ref={imgInput} type="file" accept="image/*" hidden onChange={e => { const f = e.target.files?.[0]; const id = imgFor.current; if (f && id) readImg(f, d => update(id, { src: d })); e.currentTarget.value = ""; }} />
+      </div>
+
+      <div className="fb-pagebar">
+        <button className="fb-pgbtn" onClick={() => setCurPage(p => Math.max(0, p - 1))} disabled={curPage === 0}>◀</button>
+        <span className="fb-pglabel">Page {curPage + 1} of {pageCount}</span>
+        <button className="fb-pgbtn" onClick={() => setCurPage(p => Math.min(pageCount - 1, p + 1))} disabled={curPage >= pageCount - 1}>▶</button>
+        <span style={{ width: 14 }} />
+        <button className="fb-pgbtn wide" onClick={addPage}>＋ Add page</button>
+        {pageCount > 1 && <button className="fb-pgbtn wide danger" onClick={deletePage}>🗑 Delete page</button>}
       </div>
 
       <div className="fb-body">
@@ -238,9 +271,9 @@ export default function FormBuilder({ open, initialSchema, initialTitle, saving,
         {/* Page / canvas */}
         <div className="fb-stage" onClick={() => setSelId(null)}>
           <div className="fb-page" ref={pageRef} onClick={e => e.stopPropagation()}>
-            {logo && <img className="fb-logo" src={logo} alt="logo" />}
-            {objects.length === 0 && <div className="fb-hint">Add fields, text and shapes from the left, then drag them anywhere and resize with the corner handle.</div>}
-            {objects.map(o => (
+            {logo && curPage === 0 && <img className="fb-logo" src={logo} alt="logo" />}
+            {objects.filter(o => (o.page || 0) === curPage).length === 0 && <div className="fb-hint">Add fields, text and shapes from the left, then drag them anywhere and resize with the corner handle.</div>}
+            {objects.filter(o => (o.page || 0) === curPage).map(o => (
               <div key={o.id}
                 className={`fb-obj ${selId === o.id ? "sel" : ""}`}
                 style={{ left: `${o.x}%`, top: `${o.y}%`, width: `${o.w}%`, height: `${o.h}%`, zIndex: selId === o.id ? 20 : 5 }}
@@ -367,10 +400,17 @@ export function formToHtml(schema: FormSchema): string {
     }
   };
   const logo = schema.logo ? `<img src="${schema.logo}" style="position:absolute;top:3%;left:50%;transform:translateX(-50%);max-height:70px;max-width:40%;object-fit:contain"/>` : "";
+  const pageCount = schema.pageCount || (schema.objects.reduce((m, o) => Math.max(m, o.page || 0), 0) + 1) || 1;
+  const pages: string[] = [];
+  for (let p = 0; p < pageCount; p++) {
+    const objs = schema.objects.filter(o => (o.page || 0) === p);
+    pages.push(`<div class="pg">${p === 0 ? logo : ""}${objs.map(objHtml).join("")}</div>`);
+  }
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(schema.title)}</title>
     <style>@page{size:A4;margin:0}body{margin:0;font-family:'DM Sans',Arial,sans-serif}
-    .pg{position:relative;width:210mm;height:297mm;overflow:hidden}</style></head>
-    <body><div class="pg">${logo}${schema.objects.map(objHtml).join("")}</div></body></html>`;
+    .pg{position:relative;width:210mm;height:297mm;overflow:hidden;page-break-after:always}
+    .pg:last-child{page-break-after:auto}</style></head>
+    <body>${pages.join("")}</body></html>`;
 }
 
 function printForm(schema: FormSchema) {

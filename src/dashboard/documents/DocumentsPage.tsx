@@ -940,6 +940,52 @@ export default function DocumentsPage() {
     return pages.length?pages:[html];
   };
 
+  // Render a form schema (from the builder) to a blank A4 PDF so it opens in
+  // the editor like any PDF — fillable with the text/signature/date tools, and
+  // routable + certifiable. The form itself stays editable in the Drive builder.
+  async function formToPdfBytes(schema:any):Promise<Uint8Array>{
+    const jspdf=await loadJsPdf(); const { jsPDF }=jspdf;
+    const pdf=new jsPDF({ unit:"pt", format:"a4", orientation:"portrait" });
+    const PW=595.28, PH=841.89;
+    const X=(p:number)=>p/100*PW, Y=(p:number)=>p/100*PH, W=(p:number)=>p/100*PW, H=(p:number)=>p/100*PH;
+    const imgFmt=(d:string)=> d.includes("image/png")?"PNG": d.includes("image/webp")?"WEBP":"JPEG";
+    // jsPDF colour setters are most reliable with numeric RGB (hex strings vary by build).
+    const rgb=(hex:string|undefined, def:[number,number,number]):[number,number,number]=>{
+      if(!hex||hex==="transparent") return def;
+      const m=/^#?([0-9a-f]{6})$/i.exec(hex.trim()); if(!m) return def;
+      const n=parseInt(m[1],16); return [(n>>16)&255,(n>>8)&255,n&255];
+    };
+    pdf.setFont("helvetica","normal");
+    const objs=schema?.objects||[];
+    const pageCount=schema?.pageCount || (objs.reduce((m:number,o:any)=>Math.max(m,o.page||0),0)+1) || 1;
+    for(let pg=0; pg<pageCount; pg++){
+      if(pg>0) pdf.addPage();
+      if(pg===0 && schema?.logo){ try{ const w=PW*0.4,h=70; pdf.addImage(schema.logo,imgFmt(schema.logo),(PW-w)/2,Y(3),w,h,undefined,"FAST"); }catch(_e){} }
+      for(const o of objs.filter((o:any)=>(o.page||0)===pg)){
+        const x=X(o.x), y=Y(o.y), w=W(o.w), h=H(o.h); const label=(o.label||"").toString();
+        const drawLabel=()=>{ pdf.setFontSize(9); pdf.setTextColor(60); pdf.text(label.replace(/\n/g," "), x, y+9, {maxWidth:w}); };
+        const drawBox=(by:number,bh:number)=>{ pdf.setDrawColor(150,150,150); pdf.setLineWidth(0.8); pdf.roundedRect(x,by,w,Math.max(12,bh),3,3,"S"); };
+        const filled=o.fill&&o.fill!=="transparent";
+        try{
+          switch(o.type){
+            case "heading":   pdf.setFontSize((o.fontSize||22)*0.75); pdf.setTextColor(20); pdf.text(label, x, y+(o.fontSize||22)*0.75, {maxWidth:w, align:o.align||"left"}); break;
+            case "paragraph": { pdf.setFontSize((o.fontSize||13)*0.75); pdf.setTextColor(80); const lines=pdf.splitTextToSize(label,w); pdf.text(lines, x, y+(o.fontSize||13)*0.75, {align:o.align||"left"}); break; }
+            case "image":     if(o.src){ pdf.addImage(o.src,imgFmt(o.src),x,y,w,h,undefined,"FAST"); } break;
+            case "rect":      { const[sr,sg,sb]=rgb(o.stroke,[156,163,175]); if(filled){const[fr,fg,fb]=rgb(o.fill,[255,255,255]); pdf.setFillColor(fr,fg,fb);} pdf.setDrawColor(sr,sg,sb); pdf.setLineWidth(o.strokeW||1); pdf.roundedRect(x,y,w,h,3,3, filled?"FD":"S"); break; }
+            case "ellipse":   { const[sr,sg,sb]=rgb(o.stroke,[156,163,175]); if(filled){const[fr,fg,fb]=rgb(o.fill,[255,255,255]); pdf.setFillColor(fr,fg,fb);} pdf.setDrawColor(sr,sg,sb); pdf.setLineWidth(o.strokeW||1); pdf.ellipse(x+w/2,y+h/2,w/2,h/2, filled?"FD":"S"); break; }
+            case "line":      { const[sr,sg,sb]=rgb(o.stroke,[55,65,81]); pdf.setDrawColor(sr,sg,sb); pdf.setLineWidth(o.strokeW||2); const ly=y+h/2; pdf.line(x,ly,x+w,ly); break; }
+            case "radio":
+            case "checkbox":  { drawLabel(); pdf.setFontSize(11); pdf.setTextColor(50); pdf.setDrawColor(90,90,90); pdf.setLineWidth(0.8); let oy=y+24; for(const opt of (o.options||[])){ if(o.type==="radio") pdf.circle(x+5,oy-3,4,"S"); else pdf.rect(x+1,oy-7,8,8,"S"); pdf.text(String(opt),x+16,oy); oy+=16; } break; }
+            case "signature": drawLabel(); pdf.setDrawColor(150,150,150); pdf.setLineWidth(0.8); pdf.setLineDashPattern([3,2],0); pdf.roundedRect(x,y+14,w,Math.max(14,h-14),3,3,"S"); pdf.setLineDashPattern([],0); break;
+            case "file":      drawLabel(); drawBox(y+14,h-14); break;
+            default:          drawLabel(); drawBox(y+14,h-14); if(o.type==="dropdown"){ pdf.setFontSize(10); pdf.setTextColor(150); pdf.text("v", x+w-12, y+14+Math.max(12,h-14)/2+3); }
+          }
+        }catch(_e){ /* skip a bad object rather than fail the whole form */ }
+      }
+    }
+    return new Uint8Array(pdf.output("arraybuffer"));
+  }
+
   const openDocument=async(doc:DocumentItem)=>{
     setMobileNav(false);
     setLoading(true);
@@ -997,6 +1043,24 @@ export default function DocumentsPage() {
         const saved=data?.annotations;
         if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.pdfOverlays)setPdfOverlays(stampOverlays(p.pdfOverlays));}
       }catch(e){console.error(e);}
+
+    }else if(fmt==="form"){
+      // A form opens as a generated PDF — then behaves exactly like a PDF in
+      // the editor (fill with text/signature/date tools, route, certify).
+      try{
+        const schema=(data?.content as any)?.schema
+          || (typeof data?.content==="string" ? (JSON.parse(data.content)?.schema) : null);
+        if(!schema){ setLoading(false); return; }
+        const pdfjs=await loadPdfJs();
+        const bytes=await formToPdfBytes(schema);
+        const loaded=await pdfjs.getDocument({data:bytes.slice(0)}).promise;
+        setPdfDoc(loaded);setTotalPages(loaded.numPages);
+        const saved=data?.annotations;
+        if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.pdfOverlays)setPdfOverlays(stampOverlays(p.pdfOverlays));}
+        // Drive the rest of the editor as a PDF (in memory only — the stored
+        // document keeps format "form" + its schema, so it still edits as a form).
+        setActiveDoc({...doc, format:"pdf"});
+      }catch(e){console.error("form open failed",e);}
 
     }else if(fmt==="docx"){
       const savedContent=data?.content?(typeof data.content==="string"?JSON.parse(data.content):data.content):null;
