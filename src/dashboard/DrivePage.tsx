@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../../lib/supabase";
-import DashboardLayout from "../layout/DashboardLayout";
-import FormBuilder, { type FormSchema } from "./FormBuilder";
+import { supabase } from ".././lib/supabase";
+import DashboardLayout from "./layout/DashboardLayout";
+import FormBuilder, { type FormSchema } from "./Formbuilder";
 
 const FORM_MIME = "application/nkoaha-form";
 
