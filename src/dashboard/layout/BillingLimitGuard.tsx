@@ -27,6 +27,7 @@ export default function BillingLimitGuard() {
   const [show, setShow]       = useState(false);
   const [overLimit, setOverLimit] = useState(false);
   const [planType, setPlanType]   = useState<"individual" | "organization">("individual");
+  const [userRole, setUserRole]   = useState<string>("individual");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Determine whether the user is currently over their limit ──
@@ -34,27 +35,36 @@ export default function BillingLimitGuard() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return false;
 
-    // Active, non-expired subscription = never over limit (hide popup)
+    // Who is this + which org (if any), and who OWNS that org (the org plan
+    // is held under the owner's user_id, not each member's).
+    const { data: profile } = await supabase.from("profiles")
+      .select("role,organization_id").eq("id", user.id).maybeSingle();
+    const role = profile?.role || "individual";
+    setUserRole(role);
+    let orgId = profile?.organization_id || null;
+    let ownerId: string | null = null;
+    if (role === "organization") {
+      const { data: org } = await supabase.from("organizations")
+        .select("id,owner_id").eq("owner_id", user.id).maybeSingle();
+      orgId = org?.id || orgId; ownerId = user.id;
+    } else if (role === "organization_member" && orgId) {
+      const { data: org } = await supabase.from("organizations")
+        .select("owner_id").eq("id", orgId).maybeSingle();
+      ownerId = org?.owner_id || null;
+    }
+    const isOrg = role === "organization" || role === "organization_member" || !!orgId;
+    setPlanType(isOrg ? "organization" : "individual");
+
+    // Active, non-expired subscription = never over limit. For an org (owner OR
+    // member) the covering subscription is the ORG OWNER's.
+    const subUserId = isOrg ? (ownerId || user.id) : user.id;
     const { data: sub } = await supabase.from("subscriptions")
-      .select("status,expires_at,plan_type")
-      .eq("user_id", user.id).eq("status", "active")
+      .select("status,expires_at")
+      .eq("user_id", subUserId).eq("status", "active")
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (sub && (!sub.expires_at || new Date(sub.expires_at) > new Date())) {
       return false;
     }
-
-    // No active sub → check free-tier usage (mirrors DocumentsPage logic)
-    const { data: profile } = await supabase.from("profiles")
-      .select("role,organization_id").eq("id", user.id).maybeSingle();
-    const role = profile?.role;
-    let orgId = profile?.organization_id || null;
-    if (!orgId && role === "organization") {
-      const { data: org } = await supabase.from("organizations")
-        .select("id").eq("owner_id", user.id).maybeSingle();
-      orgId = org?.id || null;
-    }
-    const isOrg = role === "organization" || role === "organization_member" || !!orgId;
-    setPlanType(isOrg ? "organization" : "individual");
 
     if (isOrg && orgId) {
       const { data: members } = await supabase.from("profiles")
@@ -107,6 +117,7 @@ export default function BillingLimitGuard() {
   if (location.pathname.includes("/billing")) return null;
 
   const isOrg = planType === "organization";
+  const isMember = userRole === "organization_member";
 
   return (
     <div style={{
@@ -132,29 +143,39 @@ export default function BillingLimitGuard() {
             You've reached your free limit
           </h2>
           <p style={{ margin: "0 0 20px", fontSize: 14, lineHeight: 1.6, color: "#57534e" }}>
-            {isOrg
+            {isMember
+              ? `Your organisation has used all ${ORG_FREE_TOTAL} free trial document actions. Please ask your organisation's admin to subscribe to a plan so your team can keep creating, routing, and signing documents.`
+              : isOrg
               ? `Your organisation has used all ${ORG_FREE_TOTAL} free trial document actions. Subscribe to an organisation plan to keep creating, routing, and signing documents.`
               : `You've used your ${INDIVIDUAL_FREE_PER_DAY} free document actions for today. Subscribe to a plan to continue without waiting for the daily reset.`}
           </p>
-          <div style={{ display: "flex", gap: 10 }}>
+          {isMember ? (
+            // Members can't subscribe — only the org admin can. Show no plan CTA.
             <button onClick={() => setShow(false)} style={{
-              flex: "0 0 auto", padding: "12px 18px", borderRadius: 10,
-              border: "1.5px solid #e7e4df", background: "#faf9f8", color: "#78716c",
-              fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
-            }}>
-              Not now
-            </button>
-            <button onClick={() => {
-              setShow(false);
-              navigate(isOrg ? "/dashboard/billing" : "/dashboard/billing");
-            }} style={{
-              flex: 1, padding: "12px 18px", borderRadius: 10, border: "none",
+              width: "100%", padding: "12px 18px", borderRadius: 10, border: "none",
               background: "#7c3aed", color: "#fff",
               fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
             }}>
-              View plans & subscribe
+              Got it
             </button>
-          </div>
+          ) : (
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShow(false)} style={{
+                flex: "0 0 auto", padding: "12px 18px", borderRadius: 10,
+                border: "1.5px solid #e7e4df", background: "#faf9f8", color: "#78716c",
+                fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+              }}>
+                Not now
+              </button>
+              <button onClick={() => { setShow(false); navigate("/dashboard/billing"); }} style={{
+                flex: 1, padding: "12px 18px", borderRadius: 10, border: "none",
+                background: "#7c3aed", color: "#fff",
+                fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
+              }}>
+                View plans & subscribe
+              </button>
+            </div>
+          )}
           <p style={{ margin: "14px 0 0", fontSize: 11.5, color: "#a8a29e", textAlign: "center" }}>
             You can keep using the app — we'll remind you again later.
           </p>

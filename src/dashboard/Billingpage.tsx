@@ -138,6 +138,7 @@ const PAYSTACK_PUBLIC_KEY   = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || "";
 
 export default function BillingPage() {
   const [role, setRole]           = useState<"individual"|"organization">("individual");
+  const [isMember, setIsMember]   = useState(false);
   const [currency, setCurrency]   = useState<Currency>("NGN");
   const [period, setPeriod]       = useState<BillingPeriod>("monthly");
   const [memberCount, setMemberCount] = useState(0);
@@ -168,6 +169,7 @@ export default function BillingPage() {
     const { data: profile } = await supabase.from("profiles").select("email,role").eq("id", user.id).single();
     const r = profile?.role === "organization" ? "organization" : profile?.role === "organization_member" ? "organization" : "individual";
     setRole(r as any);
+    setIsMember(profile?.role === "organization_member");
     setUserId(user.id);
     setUserEmail(profile?.email || user.email || "");
     setUserName((profile?.email || user.email || "").split("@")[0]);
@@ -476,6 +478,7 @@ export default function BillingPage() {
 
   async function handlePay() {
     if (!selectedPlan) return;
+    if (isMember) { setResult({ ok: false, text: "Only your organisation's admin can subscribe to a plan." } as any); setSelectedPlan(null); return; }
     setResult(null);
     setPaying(true);
 
@@ -593,12 +596,21 @@ export default function BillingPage() {
           <div className="bl-section-title">
             <span>👥</span> Organization Plans
           </div>
+          {isMember && (
+            <div style={{
+              background:"#faf5ff", border:"1px solid #e9d5ff", borderRadius:12,
+              padding:"12px 16px", margin:"0 0 16px", fontSize:13.5, color:"#6b21a8", lineHeight:1.5,
+            }}>
+              🔒 Only your organisation's admin can choose or change the plan. Please ask your admin to subscribe.
+            </div>
+          )}
           <div className="bl-plans">
             {ORG_PLANS.map(plan => {
               const price = period === "monthly" ? plan.monthly : plan.yearly;
               return (
                 <div key={plan.id} className={`bl-plan${plan.popular?" popular":""}`}
-                  onClick={()=>{setResult(null);setSelectedPlan({...plan, period});}}>
+                  style={isMember?{cursor:"default"}:undefined}
+                  onClick={isMember?undefined:()=>{setResult(null);setSelectedPlan({...plan, period});}}>
                   {plan.popular && <div className="bl-popular-chip">Most Popular</div>}
                   <div className="bl-plan-name">{plan.name}</div>
                   <div className="bl-plan-members" style={{color:plan.color,fontWeight:600}}>{plan.members}</div>
@@ -611,9 +623,15 @@ export default function BillingPage() {
                       </li>
                     ))}
                   </ul>
-                  <button className="bl-plan-btn" style={{background:plan.color,color:"#fff"}}>
-                    Choose {plan.name}
-                  </button>
+                  {isMember ? (
+                    <div className="bl-plan-btn" style={{background:"#f5f3ef",color:"#a8a29e",cursor:"default",textAlign:"center"}}>
+                      Admin only
+                    </div>
+                  ) : (
+                    <button className="bl-plan-btn" style={{background:plan.color,color:"#fff"}}>
+                      Choose {plan.name}
+                    </button>
+                  )}
                 </div>
               );
             })}
