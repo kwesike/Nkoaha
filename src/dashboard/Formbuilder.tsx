@@ -378,35 +378,43 @@ function SettingsPanel({ o, update, pickImage, close }: { o: FormObject; update:
   );
 }
 
-// ── Render a blank form to printable HTML and open the print dialog ──
-// (Shared layout basis for the fill view / PDF; here used for "Download PDF".)
-export function formToHtml(schema: FormSchema): string {
-  const esc = (s: string) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const objHtml = (o: FormObject) => {
-    const pos = `position:absolute;left:${o.x}%;top:${o.y}%;width:${o.w}%;height:${o.h}%;box-sizing:border-box;`;
-    const lbl = `<div style="font-size:11px;font-weight:600;color:#44403c;margin-bottom:2px">${esc(o.label || "")}${o.required ? ' <span style="color:#dc2626">*</span>' : ""}</div>`;
-    const box = (h = "calc(100% - 15px)") => `<div style="border:1px solid #9ca3af;border-radius:5px;height:${h};width:100%"></div>`;
-    switch (o.type) {
-      case "heading":   return `<div style="${pos}font-size:${o.fontSize || 22}px;font-weight:700;text-align:${o.align || "left"}">${esc(o.label || "")}</div>`;
-      case "paragraph": return `<div style="${pos}font-size:${o.fontSize || 13}px;color:#57534e;text-align:${o.align || "left"};line-height:1.4">${esc(o.label || "")}</div>`;
-      case "image":     return o.src ? `<img src="${o.src}" style="${pos}object-fit:contain"/>` : `<div style="${pos}"></div>`;
-      case "rect":      return `<div style="${pos}background:${o.fill};border:${o.strokeW || 1}px solid ${o.stroke};border-radius:3px"></div>`;
-      case "ellipse":   return `<div style="${pos}background:${o.fill};border:${o.strokeW || 1}px solid ${o.stroke};border-radius:50%"></div>`;
-      case "line":      return `<div style="${pos}display:flex;align-items:center"><div style="width:100%;height:${o.strokeW || 2}px;background:${o.stroke}"></div></div>`;
-      case "radio":
-      case "checkbox":  return `<div style="${pos}">${lbl}${(o.options || []).map(op => `<div style="font-size:12px;margin:2px 0">${o.type === "radio" ? "◯" : "☐"} ${esc(op)}</div>`).join("")}</div>`;
-      case "signature": return `<div style="${pos}">${lbl}<div style="border:1.4px dashed #9ca3af;border-radius:6px;height:calc(100% - 15px)"></div></div>`;
-      default:          return `<div style="${pos}">${lbl}${box()}</div>`;
-    }
-  };
-  const logo = schema.logo ? `<img src="${schema.logo}" style="position:absolute;top:3%;left:50%;transform:translateX(-50%);max-height:70px;max-width:40%;object-fit:contain"/>` : "";
-  const pageCount = schema.pageCount || (schema.objects.reduce((m, o) => Math.max(m, o.page || 0), 0) + 1) || 1;
-  const pages: string[] = [];
-  for (let p = 0; p < pageCount; p++) {
-    const objs = schema.objects.filter(o => (o.page || 0) === p);
-    pages.push(`<div class="pg">${p === 0 ? logo : ""}${objs.map(objHtml).join("")}</div>`);
+// ── Shared HTML renderers (used by the builder's PDF print AND by the editor,
+//    which rasterises this exact HTML so the opened form matches the design). ──
+function fbEsc(s: string) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function fbObjHtml(o: FormObject): string {
+  const pos = `position:absolute;left:${o.x}%;top:${o.y}%;width:${o.w}%;height:${o.h}%;box-sizing:border-box;`;
+  const lbl = `<div style="font-size:11px;font-weight:600;color:#44403c;margin-bottom:2px">${fbEsc(o.label || "")}${o.required ? ' <span style="color:#dc2626">*</span>' : ""}</div>`;
+  const box = (h = "calc(100% - 15px)") => `<div style="border:1px solid #9ca3af;border-radius:5px;height:${h};width:100%"></div>`;
+  switch (o.type) {
+    case "heading":   return `<div style="${pos}font-size:${o.fontSize || 22}px;font-weight:700;text-align:${o.align || "left"};line-height:1.15;overflow:hidden">${fbEsc(o.label || "")}</div>`;
+    case "paragraph": return `<div style="${pos}font-size:${o.fontSize || 13}px;color:#57534e;text-align:${o.align || "left"};line-height:1.4;overflow:hidden">${fbEsc(o.label || "")}</div>`;
+    case "image":     return o.src ? `<img src="${o.src}" style="${pos}object-fit:contain"/>` : `<div style="${pos}"></div>`;
+    case "rect":      return `<div style="${pos}background:${o.fill};border:${o.strokeW || 1}px solid ${o.stroke};border-radius:3px"></div>`;
+    case "ellipse":   return `<div style="${pos}background:${o.fill};border:${o.strokeW || 1}px solid ${o.stroke};border-radius:50%"></div>`;
+    case "line":      return `<div style="${pos}display:flex;align-items:center"><div style="width:100%;height:${o.strokeW || 2}px;background:${o.stroke}"></div></div>`;
+    case "radio":
+    case "checkbox":  return `<div style="${pos}">${lbl}${(o.options || []).map(op => `<div style="font-size:12px;margin:2px 0">${o.type === "radio" ? "◯" : "☐"} ${fbEsc(op)}</div>`).join("")}</div>`;
+    case "signature": return `<div style="${pos}">${lbl}<div style="border:1.4px dashed #9ca3af;border-radius:6px;height:calc(100% - 15px)"></div></div>`;
+    default:          return `<div style="${pos}">${lbl}${box()}</div>`;
   }
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(schema.title)}</title>
+}
+function fbLogoHtml(logo?: string) {
+  return logo ? `<img src="${logo}" style="position:absolute;top:3%;left:50%;transform:translateX(-50%);max-height:70px;max-width:40%;object-fit:contain"/>` : "";
+}
+export function formPageCount(schema: FormSchema): number {
+  return schema.pageCount || ((schema.objects || []).reduce((m, o) => Math.max(m, o.page || 0), 0) + 1) || 1;
+}
+// Inner HTML for ONE page (objects positioned by % inside a relative container).
+export function formPageHtml(schema: FormSchema, page: number): string {
+  const objs = (schema.objects || []).filter(o => (o.page || 0) === page);
+  return `${page === 0 ? fbLogoHtml(schema.logo) : ""}${objs.map(fbObjHtml).join("")}`;
+}
+// Full printable multi-page document (used by the builder's "Download PDF").
+export function formToHtml(schema: FormSchema): string {
+  const n = formPageCount(schema);
+  const pages: string[] = [];
+  for (let p = 0; p < n; p++) pages.push(`<div class="pg">${formPageHtml(schema, p)}</div>`);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${fbEsc(schema.title)}</title>
     <style>@page{size:A4;margin:0}
     *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
     body{margin:0;font-family:'DM Sans',Arial,sans-serif}
