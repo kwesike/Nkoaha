@@ -982,7 +982,7 @@ export default function DocumentsPage() {
     pdfCanvasRefs.current=[];docxPdfCanvasRefs.current=[];
 
     const{data,error}=await supabase.from("documents")
-      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready,owner_id,status")
+      .select("content,file_url,pages,title,header,footer,format,html_content,document_kind,annotations,pdf_url,pdf_ready,owner_id,status,owner_type,organization_id")
       .eq("id",doc.id).single();
     if(error){console.error(error);setLoading(false);return;}
 
@@ -1030,22 +1030,46 @@ export default function DocumentsPage() {
       }catch(e){console.error(e);}
 
     }else if(fmt==="form"){
-      // A form opens as a generated PDF — then behaves exactly like a PDF in
-      // the editor (fill with text/signature/date tools, route, certify).
+      // A form is a reusable TEMPLATE. Opening it creates a SEPARATE filled-form
+      // document (its own id + Drive entry) generated from the current design, so
+      // later edits to the template never touch copies already being filled.
       try{
         const schema=(data?.content as any)?.schema
           || (typeof data?.content==="string" ? (JSON.parse(data.content)?.schema) : null);
-        if(!schema){ setLoading(false); return; }
+        if(!schema){ setLoading(false); alert("This form has no design yet."); return; }
+        const { data:{ user } }=await supabase.auth.getUser();
+        if(!user){ setLoading(false); return; }
         const pdfjs=await loadPdfJs();
         const bytes=await formToPdfBytes(schema);
         const loaded=await pdfjs.getDocument({data:bytes.slice(0)}).promise;
+
+        const instTitle=`${data?.title||doc.title||"Form"} — ${new Date().toLocaleDateString()}`;
+        const { data:inst, error:insErr }=await supabase.from("documents").insert({
+          owner_id:user.id, sender_id:user.id, uploaded_by:user.id,
+          owner_type:(data as any)?.owner_type||"individual",
+          organization_id:(data as any)?.organization_id??null,
+          document_kind:"editor", format:"pdf", title:instTitle,
+          file_url:"", status:"draft", pages:loaded.numPages,
+        }).select("id").single();
+        if(insErr||!inst){ throw new Error(insErr?.message||"Could not create a document from this form."); }
+
+        let fileUrl="";
+        try{
+          const path=`${inst.id}/form-${Date.now()}.pdf`;
+          const ab=bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset+bytes.byteLength) as ArrayBuffer;
+          const{error:upErr}=await supabase.storage.from("documents").upload(path,new Blob([ab],{type:"application/pdf"}),{contentType:"application/pdf",upsert:true});
+          if(!upErr){
+            fileUrl=path;
+            await supabase.from("documents").update({ file_url:path, pdf_url:path, pdf_ready:true }).eq("id",inst.id);
+          }
+        }catch(err){ console.error("instance upload failed",err); }
+
         setPdfDoc(loaded);setTotalPages(loaded.numPages);
-        const saved=data?.annotations;
-        if(saved){const p=typeof saved==="string"?JSON.parse(saved):saved;if(p?.pdfOverlays)setPdfOverlays(stampOverlays(p.pdfOverlays));}
-        // Drive the rest of the editor as a PDF (in memory only — the stored
-        // document keeps format "form" + its schema, so it still edits as a form).
-        setActiveDoc({...doc, format:"pdf"});
-      }catch(e){console.error("form open failed",e);}
+        const item:DocumentItem={ id:inst.id, title:instTitle, fileUrl, format:"pdf", pages:loaded.numPages };
+        setDocuments(prev=>[item,...prev]);
+        setActiveDoc(item);
+        setDocTitle(instTitle);
+      }catch(e:any){console.error("form open failed",e); alert("Could not open the form: "+(e?.message||"unknown"));}
 
     }else if(fmt==="docx"){
       const savedContent=data?.content?(typeof data.content==="string"?JSON.parse(data.content):data.content):null;

@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "./../lib/supabase";
-import DashboardLayout from "./layout/DashboardLayout";
-import FormBuilder, { type FormSchema } from "./Formbuilder";
+import { supabase } from "../../lib/supabase";
+import DashboardLayout from "../layout/DashboardLayout";
+import FormBuilder, { type FormSchema } from "./FormBuilder";
 
 const FORM_MIME = "application/nkoaha-form";
 
@@ -394,8 +394,10 @@ export default function DrivePage() {
     try {
       const payload = { kind: "form", version: 1, schema };
       if (editFormDocId) {
+        // The template stays a form; filled copies are separate documents.
         const { error } = await supabase.from("documents")
-          .update({ title, content: payload, updated_at: new Date().toISOString() }).eq("id", editFormDocId);
+          .update({ title, content: payload, format: "form", updated_at: new Date().toISOString() })
+          .eq("id", editFormDocId);
         if (error) throw new Error(error.message);
         await supabase.from("drive_items").update({ name: title }).eq("document_id", editFormDocId);
       } else {
