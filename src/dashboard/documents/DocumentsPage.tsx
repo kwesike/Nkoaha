@@ -6,7 +6,7 @@ import { removeWhiteBackground } from "../../lib/removeBackground";
 import type { JSONContent } from "@tiptap/react";
 import debounce from "lodash.debounce";
 import DocumentEditor from "./DocumentEditor";
-import { formPageHtml, formPageCount } from "./FormBuilder";
+import { formPageHtml, formPageCount } from "../Formbuilder";
 import { EMPTY_DOC } from "./emptyDoc";
 
 type SaveStatus = "saved" | "saving" | "unsaved";
