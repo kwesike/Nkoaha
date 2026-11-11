@@ -47,10 +47,19 @@ export default function BillingLimitGuard() {
       const { data: org } = await supabase.from("organizations")
         .select("id,owner_id").eq("owner_id", user.id).maybeSingle();
       orgId = org?.id || orgId; ownerId = user.id;
-    } else if (role === "organization_member" && orgId) {
-      const { data: org } = await supabase.from("organizations")
-        .select("owner_id").eq("id", orgId).maybeSingle();
-      ownerId = org?.owner_id || null;
+    } else if (role === "organization_member") {
+      // Membership is the source of truth in organization_members — profiles
+      // .organization_id is often NOT set for members, so fall back to it.
+      if (!orgId) {
+        const { data: m } = await supabase.from("organization_members")
+          .select("organization_id").eq("user_id", user.id).maybeSingle();
+        orgId = m?.organization_id || null;
+      }
+      if (orgId) {
+        const { data: org } = await supabase.from("organizations")
+          .select("owner_id").eq("id", orgId).maybeSingle();
+        ownerId = org?.owner_id || null;
+      }
     }
     const isOrg = role === "organization" || role === "organization_member" || !!orgId;
     setPlanType(isOrg ? "organization" : "individual");

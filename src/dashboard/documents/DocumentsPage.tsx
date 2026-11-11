@@ -6,7 +6,7 @@ import { removeWhiteBackground } from "../../lib/removeBackground";
 import type { JSONContent } from "@tiptap/react";
 import debounce from "lodash.debounce";
 import DocumentEditor from "./DocumentEditor";
-import { formPageHtml, formPageCount } from "../Formbuilder";
+import { formPageHtml, formPageCount } from "./FormBuilder";
 import { EMPTY_DOC } from "./emptyDoc";
 
 type SaveStatus = "saved" | "saving" | "unsaved";
@@ -1792,6 +1792,30 @@ export default function DocumentsPage() {
   const INDIVIDUAL_FREE_PER_DAY = 2;
   const ORG_FREE_TOTAL          = 5;
 
+  // Resolve the user_id that HOLDS the billing subscription for this user:
+  // for an org owner it's themselves; for an org member it's the org owner
+  // (the org plan lives under the owner's user_id). Returns null for individuals.
+  const orgOwnerFor=async(userId:string):Promise<string|null>=>{
+    const{data:profile}=await supabase.from("profiles")
+      .select("role,organization_id").eq("id",userId).maybeSingle();
+    const role=profile?.role;
+    if(role==="organization") return userId;
+    if(role==="organization_member"){
+      let orgId=profile?.organization_id||null;
+      if(!orgId){
+        const{data:m}=await supabase.from("organization_members")
+          .select("organization_id").eq("user_id",userId).maybeSingle();
+        orgId=m?.organization_id||null;
+      }
+      if(orgId){
+        const{data:org}=await supabase.from("organizations")
+          .select("owner_id").eq("id",orgId).maybeSingle();
+        return org?.owner_id||null;
+      }
+    }
+    return null;
+  };
+
   const checkFreeTierLimit=async(userId:string):Promise<boolean>=>{
     // Determine if this user is part of an organization (owner or member)
     const{data:profile}=await supabase.from("profiles")
@@ -1804,6 +1828,12 @@ export default function DocumentsPage() {
       const{data:org}=await supabase.from("organizations")
         .select("id").eq("owner_id",userId).maybeSingle();
       orgId=org?.id||null;
+    }
+    // Members carry membership in organization_members (not always on profiles)
+    if(!orgId && role==="organization_member"){
+      const{data:m}=await supabase.from("organization_members")
+        .select("organization_id").eq("user_id",userId).maybeSingle();
+      orgId=m?.organization_id||null;
     }
 
     const isOrg = role==="organization" || role==="organization_member" || !!orgId;
@@ -1851,10 +1881,13 @@ export default function DocumentsPage() {
   };
 
   const checkDocLimit=async(userId:string):Promise<boolean>=>{
-    // Returns true if user can create more documents
+    // Returns true if user can create more documents.
+    // The covering subscription for an org member is the ORG OWNER's, so look
+    // under the billing owner's user_id rather than the member's.
+    const billingUserId=(await orgOwnerFor(userId))||userId;
     const{data:sub}=await supabase.from("subscriptions")
       .select("org_doc_limit,doc_quota,plan_type,period,activated_at,created_at,expires_at")
-      .eq("user_id",userId).eq("status","active")
+      .eq("user_id",billingUserId).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
 
     // No active subscription → enforce FREE-TIER allowance
@@ -1864,7 +1897,7 @@ export default function DocumentsPage() {
     if(sub.expires_at && new Date(sub.expires_at) < new Date()){
       await supabase.from("subscriptions")
         .update({status:"expired",updated_at:new Date().toISOString()})
-        .eq("user_id",userId).eq("status","active");
+        .eq("user_id",billingUserId).eq("status","active");
       return await checkFreeTierLimit(userId);
     }
 
@@ -2701,8 +2734,9 @@ export default function DocumentsPage() {
   // Does the user have an active (non-expired) paid subscription? Used to gate
   // premium formats (XLSX/PPT) to subscribers only.
   async function hasActiveSubscription(userId:string):Promise<boolean>{
+    const billingUserId=(await orgOwnerFor(userId))||userId;
     const{data:sub}=await supabase.from("subscriptions")
-      .select("status,expires_at").eq("user_id",userId).eq("status","active")
+      .select("status,expires_at").eq("user_id",billingUserId).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
     if(!sub) return false;
     if(sub.expires_at && new Date(sub.expires_at) < new Date()) return false;
