@@ -1890,8 +1890,13 @@ export default function DocumentsPage() {
       .eq("user_id",billingUserId).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
 
-    // No active subscription → enforce FREE-TIER allowance
-    if(!sub) return await checkFreeTierLimit(userId);
+    // No readable active subscription. A member can't read the owner's sub row
+    // (RLS), so confirm via the SECURITY DEFINER function before gating them.
+    if(!sub){
+      const{data:active}=await supabase.rpc("billing_active");
+      if(active===true) return true;
+      return await checkFreeTierLimit(userId);
+    }
 
     // ── Auto-expire if past expiry date → fall back to free tier ──
     if(sub.expires_at && new Date(sub.expires_at) < new Date()){
@@ -2738,7 +2743,7 @@ export default function DocumentsPage() {
     const{data:sub}=await supabase.from("subscriptions")
       .select("status,expires_at").eq("user_id",billingUserId).eq("status","active")
       .order("created_at",{ascending:false}).limit(1).maybeSingle();
-    if(!sub) return false;
+    if(!sub){ const{data:active}=await supabase.rpc("billing_active"); return active===true; }
     if(sub.expires_at && new Date(sub.expires_at) < new Date()) return false;
     return true;
   }

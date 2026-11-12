@@ -42,38 +42,23 @@ export default function BillingLimitGuard() {
     const role = profile?.role || "individual";
     setUserRole(role);
     let orgId = profile?.organization_id || null;
-    let ownerId: string | null = null;
-    if (role === "organization") {
+    if (role === "organization" && !orgId) {
       const { data: org } = await supabase.from("organizations")
-        .select("id,owner_id").eq("owner_id", user.id).maybeSingle();
-      orgId = org?.id || orgId; ownerId = user.id;
-    } else if (role === "organization_member") {
-      // Membership is the source of truth in organization_members — profiles
-      // .organization_id is often NOT set for members, so fall back to it.
-      if (!orgId) {
-        const { data: m } = await supabase.from("organization_members")
-          .select("organization_id").eq("user_id", user.id).maybeSingle();
-        orgId = m?.organization_id || null;
-      }
-      if (orgId) {
-        const { data: org } = await supabase.from("organizations")
-          .select("owner_id").eq("id", orgId).maybeSingle();
-        ownerId = org?.owner_id || null;
-      }
+        .select("id").eq("owner_id", user.id).maybeSingle();
+      orgId = org?.id || null;
+    } else if (role === "organization_member" && !orgId) {
+      const { data: m } = await supabase.from("organization_members")
+        .select("organization_id").eq("user_id", user.id).maybeSingle();
+      orgId = m?.organization_id || null;
     }
     const isOrg = role === "organization" || role === "organization_member" || !!orgId;
     setPlanType(isOrg ? "organization" : "individual");
 
-    // Active, non-expired subscription = never over limit. For an org (owner OR
-    // member) the covering subscription is the ORG OWNER's.
-    const subUserId = isOrg ? (ownerId || user.id) : user.id;
-    const { data: sub } = await supabase.from("subscriptions")
-      .select("status,expires_at")
-      .eq("user_id", subUserId).eq("status", "active")
-      .order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (sub && (!sub.expires_at || new Date(sub.expires_at) > new Date())) {
-      return false;
-    }
+    // Active plan = never over limit. Checked via a SECURITY DEFINER function so
+    // a member can see that their ORG OWNER has paid (RLS hides the owner's
+    // subscription row from members, which is why direct queries came back empty).
+    const { data: active } = await supabase.rpc("billing_active");
+    if (active === true) return false;
 
     if (isOrg && orgId) {
       const { data: members } = await supabase.from("profiles")
