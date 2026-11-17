@@ -124,6 +124,10 @@ const STYLES = `
   .dp-summary-body strong{color:var(--text,#1c1917)}
   .dp-overlay-img{display:block;object-fit:contain;pointer-events:none;border-radius:3px;max-width:400px;}
   .dp-pdf-overlay-item:hover .dp-pdf-overlay-del{opacity:1}
+  .dp-pdf-overlay-item.selected .dp-pdf-overlay-del{opacity:1}
+  .dp-pdf-overlay-item.selected .dp-overlay-resize{display:flex}
+  .dp-pdf-overlay-item.selected{outline:1.5px dashed #a78bfa;outline-offset:2px}
+  @media (hover:none){ .dp-pdf-overlay-del{width:22px;height:22px;font-size:12px} .dp-overlay-resize button{padding:2px 5px;font-size:14px} }
   .dp-pdf-overlay-del{opacity:0;position:absolute;top:-8px;right:-8px;width:16px;height:16px;background:#ef4444;color:#fff;border:none;border-radius:50%;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:opacity .15s;z-index:11}
   .dp-overlay-resize{position:absolute;top:-22px;left:0;display:none;align-items:center;gap:3px;background:rgba(0,0,0,0.7);border-radius:4px;padding:2px 5px;z-index:12}
   .dp-pdf-overlay-item:hover .dp-overlay-resize{display:flex}
@@ -685,6 +689,8 @@ export default function DocumentsPage() {
   const [pdfOverlays, setPdfOverlays] = useState<PdfOverlay[]>([]);
   const [pdfTool, setPdfTool]         = useState<"none"|"text"|"date"|"signature"|"table">("none");
   const [dragOverlay, setDragOverlay] = useState<string|null>(null);
+  // Tap-selected annotation — shows its resize/delete controls on touch (no hover).
+  const [selectedOverlay, setSelectedOverlay] = useState<string|null>(null);
   // Only the setter is used now (the multi-page drag handler positions from the
   // cursor directly, so it never reads the previous dragStart value).
   const [, setDragStart]     = useState<{x:number;y:number}>({x:0,y:0});
@@ -4362,6 +4368,7 @@ export default function DocumentsPage() {
 
         {activeDoc&&!loading&&!converting&&(
           <div className="dp-canvas" ref={canvasAreaRef} onContextMenu={handleRightClick}
+            onPointerDown={()=>setSelectedOverlay(null)}
             onPointerMove={e=>{
               if(!dragOverlay)return;
               // Multi-page aware drag: find which page (.dp-pdf-stage) the cursor
@@ -4480,9 +4487,9 @@ export default function DocumentsPage() {
                     >
                       <canvas ref={el=>{pdfCanvasRefs.current[i]=el;}} className="dp-pdf-canvas"/>
                       {pdfOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                        <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
+                        <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}${selectedOverlay===ov.id?" selected":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
                           onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"pdf");}}}
-                          onPointerDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
+                          onPointerDown={e=>{e.stopPropagation();setSelectedOverlay(ov.id);if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                           onWheel={e=>{
                             e.stopPropagation();
                             const delta=e.deltaY<0?2:-2;
@@ -4683,9 +4690,9 @@ export default function DocumentsPage() {
                       >
                         <canvas ref={el=>{docxPdfCanvasRefs.current[i]=el;}} style={{display:"block",maxWidth:"100%"}}/>
                         {docxOverlays.filter(o=>o.pageIdx===i).map(ov=>(
-                          <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
+                          <div key={ov.id} className={`dp-pdf-overlay-item${isLocked(ov)?" locked":""}${selectedOverlay===ov.id?" selected":""}`} style={{left:`${ov.x}%`,top:`${ov.y}%`}}
                             onContextMenu={e=>{if(ov.type==="image"||ov.type==="signature"){e.preventDefault();e.stopPropagation();removeOverlayBackground(ov,"docx");}}}
-                          onPointerDown={e=>{e.stopPropagation();if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
+                          onPointerDown={e=>{e.stopPropagation();setSelectedOverlay(ov.id);if(!isLocked(ov)){setDragOverlay(ov.id);setDragStart({x:e.clientX,y:e.clientY});}}}
                             onWheel={e=>{
                               e.stopPropagation();
                               if(isLocked(ov))return;

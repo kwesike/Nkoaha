@@ -18,6 +18,7 @@ const EmailOtpVerify              = lazy(() => import("./auth/EmailOtpVerify"));
 const ForgotPassword               = lazy(() => import("./auth/ForgotPassword"));
 const ResetPassword                = lazy(() => import("./auth/ResetPassword"));
 const JoinOrg                      = lazy(() => import("./auth/JoinOrg"));
+const VerifyCertificatePage        = lazy(() => import("./public/VerifyCertificatePage"));
 const MFASetupInvite               = lazy(() => import("./auth/MFASetupInvite"));
 const IndividualOnboarding         = lazy(() => import("./auth/IndividualOnboarding"));
 const OrganizationOnboarding       = lazy(() => import("./auth/OrganizationOnboarding"));
@@ -33,6 +34,7 @@ const SettingsPage                 = lazy(() => import("./dashboard/Settingspage
 const InboxPage                    = lazy(() => import("./dashboard/inbox/InboxPage"));
 const DocumentsPage                = lazy(() => import("./dashboard/documents/DocumentsPage"));
 const DrivePage                    = lazy(() => import("./dashboard/DrivePage"));
+const AutomationsPage              = lazy(() => import("./dashboard/Automationspage"));
 
 const AdminOverviewPage            = lazy(() => import("./admin/AdminOverviewPage"));
 const AdminUsersPage               = lazy(() => import("./admin/AdminUsersPage"));
@@ -41,11 +43,11 @@ const AdminSubscriptionsPage       = lazy(() => import("./admin/AdminSubscriptio
 const AdminDocumentsPage           = lazy(() => import("./admin/AdminDocumentsPage"));
 const AdminAuditLogsPage           = lazy(() => import("./admin/AdminAuditlogsPage")); // lowercase 'l' matches filename
 const AdminSecurityPage            = lazy(() => import("./admin/AdminSecurityPage"));
+const AdminWebsitePage             = lazy(() => import("./admin/AdminWebsitePage"));
 const SupportInboxPage             = lazy(() => import("./dashboard/support/SupportInboxPage"));
 const AdminTeamPage               = lazy(() => import("./admin/AdminTeamPage"));
 const AdminSettingsPage           = lazy(() => import("./admin/AdminSettingsPage"));
 const AdminNotificationPage       = lazy(() => import("./admin/AdminNotificationPage"));
-const AdminWebsitePage                = lazy(() => import("./admin/AdminWebsitePage"));
 
 function PageLoader() {
   return (
@@ -82,6 +84,10 @@ function App() {
           <Route path="/join-org"               element={<JoinOrg />} />
           <Route path="/mfa-setup"              element={<MFASetupInvite />} />
 
+          {/* Public certificate verification (no login) */}
+          <Route path="/verify"                 element={<VerifyCertificatePage />} />
+          <Route path="/verify/:certId"         element={<VerifyCertificatePage />} />
+
           {/* Onboarding */}
           <Route path="/individual"   element={<ProtectedRoute><IndividualOnboarding /></ProtectedRoute>} />
           <Route path="/organization" element={<ProtectedRoute><OrganizationOnboarding /></ProtectedRoute>} />
@@ -110,6 +116,9 @@ function App() {
           <Route path="/dashboard/drive" element={
             <ProtectedRoute><DrivePage /></ProtectedRoute>
           } />
+          <Route path="/dashboard/automations" element={
+            <ProtectedRoute><AutomationsPage /></ProtectedRoute>
+          } />
 
           {/* ── ADMIN PANEL ── */}
           <Route path="/dashboard/admin"                 element={<AdminOverviewPage />} />
@@ -120,10 +129,10 @@ function App() {
           <Route path="/dashboard/admin/documents"       element={<AdminDocumentsPage />} />
           <Route path="/dashboard/admin/audit"           element={<AdminAuditLogsPage />} />
           <Route path="/dashboard/admin/security"        element={<AdminSecurityPage />} />
+          <Route path="/dashboard/admin/website"         element={<AdminWebsitePage />} />
           <Route path="/dashboard/admin/team"            element={<AdminTeamPage />} />
           <Route path="/dashboard/admin/settings"        element={<AdminSettingsPage />} />
           <Route path="/dashboard/admin/notifications"   element={<AdminNotificationPage />} />
-          <Route path="/dashboard/admin/website"         element={<AdminWebsitePage />} />
           {/* ── ORGANIZATION ── */}
           <Route path="/dashboard/organizationdashboard" element={
             <ProtectedRoute><OrganizationDashboard /></ProtectedRoute>
