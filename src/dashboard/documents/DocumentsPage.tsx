@@ -86,7 +86,9 @@ const STYLES = `
   .dp-topbar-hint{display:none;position:absolute;top:0;right:0;height:50px;width:40px;align-items:center;justify-content:flex-end;padding-right:6px;color:var(--accent);background:linear-gradient(to right,rgba(255,255,255,0),#fff 55%);z-index:6;cursor:pointer;animation:dp-hint-pulse 1.6s ease-in-out infinite}
   .dp-topbar-hint.left{right:auto;left:0;justify-content:flex-start;padding-right:0;padding-left:6px;background:linear-gradient(to left,rgba(255,255,255,0),#fff 55%)}
   @keyframes dp-hint-pulse{0%,100%{opacity:.45}50%{opacity:.9}}
-  .dp-topbar{height:50px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:12px;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .dp-topbar{height:50px;background:#fff;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 18px;gap:12px;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,.04);overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
+  .dp-topbar::-webkit-scrollbar{height:0}
+  .dp-topbar-hint.show{display:flex}
   .dp-title-input{border:none;outline:none;font-family:var(--font);font-size:15px;font-weight:500;color:var(--text);background:transparent;flex:1;min-width:0;padding:4px 8px;border-radius:6px;transition:background .15s}
   .dp-title-input:hover,.dp-title-input:focus{background:var(--bg)}
   .dp-save-badge{font-size:11px;font-family:var(--mono);padding:3px 9px;border-radius:20px;white-space:nowrap;flex-shrink:0}
