@@ -228,9 +228,24 @@ export default function AutomationsPage() {
               </select>
               <div style={{ fontSize: 12, color: "#a8a29e", marginTop: 6 }}>{TRIGGERS.find(t => t.id === editAuto.trigger_type)?.hint}</div>
               {editAuto.trigger_type === "document_pending" && (
-                <div style={{ marginTop: 10 }}>
-                  <label className="au-lbl">Days without a signature</label>
-                  <input className="au-in" type="number" min={1} value={editAuto.trigger_config?.days || 3} onChange={e => setEditAuto({ ...editAuto, trigger_config: { ...editAuto.trigger_config, days: parseInt(e.target.value) || 3 } })} style={{ maxWidth: 140 }} />
+                <div className="au-grid" style={{ marginTop: 10 }}>
+                  <div>
+                    <label className="au-lbl">Days without a signature</label>
+                    <input className="au-in" type="number" min={1} value={editAuto.trigger_config?.days || 3} onChange={e => setEditAuto({ ...editAuto, trigger_config: { ...editAuto.trigger_config, days: parseInt(e.target.value) || 3 } })} style={{ maxWidth: 140 }} />
+                  </div>
+                  <div>
+                    <label className="au-lbl">Reminders</label>
+                    <select className="au-sel" value={editAuto.trigger_config?.repeat || "once"} onChange={e => setEditAuto({ ...editAuto, trigger_config: { ...editAuto.trigger_config, repeat: e.target.value } })}>
+                      <option value="once">Remind once</option>
+                      <option value="interval">Remind repeatedly until signed</option>
+                    </select>
+                    {editAuto.trigger_config?.repeat === "interval" && (
+                      <div style={{ marginTop: 8 }}>
+                        <label className="au-lbl">Repeat every (days)</label>
+                        <input className="au-in" type="number" min={1} value={editAuto.trigger_config?.repeat_days || 3} onChange={e => setEditAuto({ ...editAuto, trigger_config: { ...editAuto.trigger_config, repeat_days: parseInt(e.target.value) || 3 } })} style={{ maxWidth: 140 }} />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
               {editAuto.trigger_type === "schedule" && (
