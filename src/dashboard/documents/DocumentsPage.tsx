@@ -673,6 +673,9 @@ export default function DocumentsPage() {
   const [emailMsg, setEmailMsg]           = useState<{type:"success"|"error";text:string}|null>(null);
   const [users, setUsers]             = useState<any[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<string[]>([]); // ordered list of user IDs
+  const [externalSigners, setExternalSigners] = useState<{name:string;email:string}[]>([]); // off-platform signers in the chain
+  const [extName, setExtName] = useState("");
+  const [extEmail, setExtEmail] = useState("");
   const [currentOrgId, setCurrentOrgId]     = useState<string|null>(null);
   const [docxHtmlPages, setDocxHtmlPages] = useState<string[]>([]);
   const [docxOverlays, setDocxOverlays]   = useState<PdfOverlay[]>([]);
@@ -3011,12 +3014,18 @@ export default function DocumentsPage() {
     console.log("[Route] final user count:",allUsers.length);
     setUsers(allUsers);
     setSelectedRoute([]);
+    setExternalSigners([]);setExtName("");setExtEmail("");
     setShowRouteModal(true);
   };
   const saveRoute=async()=>{
-    if(!activeDoc||selectedRoute.length===0)return;
+    // chain = internal users (in order) then external signers (in order)
+    const chain:({kind:"user";id:string}|{kind:"ext";name:string;email:string})[]=[
+      ...selectedRoute.map(id=>({kind:"user" as const,id})),
+      ...externalSigners.filter(e=>e.email.trim()).map(e=>({kind:"ext" as const,name:e.name.trim(),email:e.email.trim()})),
+    ];
+    if(!activeDoc||chain.length===0)return;
     const{data:{user}}=await supabase.auth.getUser(); if(!user)return;
-    const totalSteps=selectedRoute.length;
+    const totalSteps=chain.length;
 
     // ── Editable (AI / "new") docs: freeze to a PDF before routing, so the
     //    multi-party signing uses the tamperproof PDF overlay flow (fixed page
@@ -3040,38 +3049,57 @@ export default function DocumentsPage() {
       setActiveDoc(prev=>prev?({...prev,format:"pdf",fileUrl:pdfPath,pdfUrl:pdfPath,pdfReady:true} as any):prev);
     }
 
-    // Insert ALL route steps — but only activate step 1 initially
+    // Insert ALL route steps — but only activate step 1 initially.
+    // Internal steps carry recipient_id; external steps carry a secure sign_token.
+    const extTokens:Record<number,string>={};
     for(let i=0;i<totalSteps;i++){
-      await supabase.from("document_routes").insert({
+      const step=chain[i];
+      const base={
         document_id:activeDoc.id,
-        recipient_id:selectedRoute[i],
         route_order:i+1,
         total_steps:totalSteps,
         is_final:i===totalSteps-1,
         status:i===0?"pending":"waiting", // only first step is pending
-      });
+      };
+      if(step.kind==="user"){
+        await supabase.from("document_routes").insert({...base,recipient_id:step.id});
+      }else{
+        const token=(crypto.randomUUID()+crypto.randomUUID()).replace(/-/g,"");
+        extTokens[i]=token;
+        await supabase.from("document_routes").insert({
+          ...base,recipient_id:null,is_external:true,
+          recipient_name:step.name,recipient_email:step.email,
+          sign_token:token,token_expires_at:new Date(Date.now()+14*86400000).toISOString(),
+        });
+      }
     }
 
-    // ── Only notify the FIRST recipient ──
-    // Everyone else is notified when the person before them clicks Approve
-    await supabase.from("activity_logs").insert({
-      user_id:selectedRoute[0],
-      action:"document_received",
-      document_id:activeDoc.id,
-      metadata:{
-        document_title:docTitle,
-        sender_id:user.id,
-        step_order:1,
-        total_steps:totalSteps,
-        is_final:totalSteps===1,
-        status:"pending",
-      },
-    });
+    // ── Only notify/invite the FIRST signer ──
+    // Everyone else is reached when the person before them acts.
+    const first=chain[0];
+    if(first.kind==="user"){
+      await supabase.from("activity_logs").insert({
+        user_id:first.id,
+        action:"document_received",
+        document_id:activeDoc.id,
+        metadata:{
+          document_title:docTitle,
+          sender_id:user.id,
+          step_order:1,
+          total_steps:totalSteps,
+          is_final:totalSteps===1,
+          status:"pending",
+        },
+      });
+    }else{
+      // external first signer → email them the secure signing link
+      await supabase.functions.invoke("guest-sign",{body:{action:"invite",token:extTokens[0]}});
+    }
 
     await supabase.from("documents").update({status:"sent"}).eq("id",activeDoc.id);
     await logActivity("document_sent",activeDoc.id,docTitle,user.id);
     logSecurityEvent("document_sent",{document_id:activeDoc.id,title:docTitle,recipients:totalSteps,via:"route"});
-    setShowRouteModal(false);setSelectedRoute([]);
+    setShowRouteModal(false);setSelectedRoute([]);setExternalSigners([]);setExtName("");setExtEmail("");
     alert(`Document routed to ${totalSteps} recipient${totalSteps>1?"s":""} successfully.`);
   };
 
@@ -3191,11 +3219,15 @@ export default function DocumentsPage() {
     // Activate next step + notify next recipient
     const nextOrder = myRoute.route_order + 1;
     const{data:nextRoute}=await supabase.from("document_routes")
-      .select("recipient_id,is_final,total_steps,route_order")
+      .select("recipient_id,is_final,total_steps,route_order,is_external,recipient_email,sign_token")
       .eq("document_id",activeDoc.id)
       .eq("route_order",nextOrder)
       .maybeSingle();
-    if(nextRoute){
+    if(nextRoute && nextRoute.recipient_email && nextRoute.sign_token){
+      // next signer is EXTERNAL → activate + email them the secure link
+      await supabase.from("document_routes").update({status:"pending"}).eq("document_id",activeDoc.id).eq("route_order",nextOrder).in("status",["waiting","pending"]);
+      await supabase.functions.invoke("guest-sign",{body:{action:"invite",token:nextRoute.sign_token}});
+    } else if(nextRoute){
       await supabase.from("document_routes").update({status:"pending"}).eq("document_id",activeDoc.id).eq("route_order",nextOrder).in("status",["waiting","pending"]);
       // Update next recipient's inbox activity_log to pending so they get notified
       const{data:nextLog}=await supabase.from("activity_logs")
@@ -5323,15 +5355,17 @@ export default function DocumentsPage() {
             )}
 
             {/* Selected route — ordered steps */}
-            {selectedRoute.length>0&&(
+            {(selectedRoute.length>0||externalSigners.length>0)&&(()=>{
+              const totalLen=selectedRoute.length+externalSigners.length;
+              return (
               <div style={{marginBottom:12,background:"var(--accent-light)",borderRadius:8,padding:"8px 12px"}}>
                 <div style={{fontSize:11,fontWeight:600,color:"var(--accent)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
-                  Approval Chain ({selectedRoute.length} step{selectedRoute.length>1?"s":""})
+                  Approval Chain ({totalLen} step{totalLen>1?"s":""})
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
                   {selectedRoute.map((uid,i)=>{
                     const u=users.find(x=>x.id===uid);
-                    const isFinal=i===selectedRoute.length-1;
+                    const isFinal=externalSigners.length===0 && i===selectedRoute.length-1;
                     return (
                       <div key={uid} style={{display:"flex",alignItems:"center",gap:4}}>
                         <div style={{display:"flex",alignItems:"center",gap:5,background:"#fff",border:`1.5px solid ${isFinal?"#16a34a":"var(--accent)"}`,borderRadius:6,padding:"3px 8px",fontSize:12}}>
@@ -5341,13 +5375,30 @@ export default function DocumentsPage() {
                           <button onPointerDown={e=>e.stopPropagation()} onClick={()=>setSelectedRoute(prev=>prev.filter(id=>id!==uid))}
                             style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:13,padding:"0 2px",lineHeight:1}}>×</button>
                         </div>
-                        {i<selectedRoute.length-1&&<span style={{color:"var(--accent)",fontSize:14}}>→</span>}
+                        {i<totalLen-1&&<span style={{color:"var(--accent)",fontSize:14}}>→</span>}
+                      </div>
+                    );
+                  })}
+                  {externalSigners.map((e,j)=>{
+                    const idx=selectedRoute.length+j;
+                    const isFinal=idx===totalLen-1;
+                    return (
+                      <div key={"ext"+j} style={{display:"flex",alignItems:"center",gap:4}}>
+                        <div style={{display:"flex",alignItems:"center",gap:5,background:"#fff",border:`1.5px dashed ${isFinal?"#16a34a":"#7c3aed"}`,borderRadius:6,padding:"3px 8px",fontSize:12}}>
+                          <span style={{width:18,height:18,borderRadius:"50%",background:isFinal?"#16a34a":"#7c3aed",color:"#fff",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{idx+1}</span>
+                          <span style={{fontWeight:500,color:"var(--text)",maxWidth:90,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.name||e.email.split("@")[0]}</span>
+                          <span style={{fontSize:8.5,background:"#ede9fe",color:"#7c3aed",padding:"1px 4px",borderRadius:3,fontWeight:700}}>GUEST</span>
+                          {isFinal&&<span style={{fontSize:9,background:"#dcfce7",color:"#16a34a",padding:"1px 4px",borderRadius:3,fontWeight:600}}>FINAL</span>}
+                          <button onPointerDown={ev=>ev.stopPropagation()} onClick={()=>setExternalSigners(prev=>prev.filter((_,k)=>k!==j))}
+                            style={{background:"none",border:"none",color:"#dc2626",cursor:"pointer",fontSize:13,padding:"0 2px",lineHeight:1}}>×</button>
+                        </div>
+                        {idx<totalLen-1&&<span style={{color:"var(--accent)",fontSize:14}}>→</span>}
                       </div>
                     );
                   })}
                 </div>
               </div>
-            )}
+            );})()}
 
             {/* User list */}
             <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
@@ -5375,23 +5426,44 @@ export default function DocumentsPage() {
               )}
             </div>
 
-            {/* Send directly to an email address (off-platform recipient) */}
+            {/* Add an external signer — no NkoAha account needed */}
             <div style={{marginTop:14,paddingTop:14,borderTop:"1px dashed var(--border)"}}>
-              <button className="dp-btn dp-btn-ghost" style={{width:"100%",justifyContent:"center"}}
-                onClick={()=>{setShowRouteModal(false);setShowEmailSend(true);setEmailMsg(null);setEmailTo("");setEmailNote("");}}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                Send directly to an email address instead
-              </button>
-              <div style={{fontSize:11,color:"var(--muted)",textAlign:"center",marginTop:6}}>
-                Sends the document as a PDF to anyone, even if they're not on NkoAha.
+              <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>
+                Invite a signer not on NkoAha
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <input value={extName} onChange={e=>setExtName(e.target.value)} placeholder="Full name"
+                  style={{flex:"1 1 120px",minWidth:0,padding:"8px 10px",border:"1px solid var(--border)",borderRadius:7,fontSize:13}}/>
+                <input value={extEmail} onChange={e=>setExtEmail(e.target.value)} placeholder="Email address" type="email"
+                  onKeyDown={e=>{ if(e.key==="Enter"){ const em=extEmail.trim(); if(/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ setExternalSigners(prev=>[...prev,{name:extName.trim(),email:em}]); setExtName("");setExtEmail(""); } } }}
+                  style={{flex:"1 1 150px",minWidth:0,padding:"8px 10px",border:"1px solid var(--border)",borderRadius:7,fontSize:13}}/>
+                <button className="dp-btn dp-btn-ghost" style={{flexShrink:0}}
+                  disabled={!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(extEmail.trim())}
+                  onClick={()=>{ const em=extEmail.trim(); setExternalSigners(prev=>[...prev,{name:extName.trim(),email:em}]); setExtName("");setExtEmail(""); }}>
+                  + Add
+                </button>
+              </div>
+              <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.5}}>
+                They'll get a secure email link to review and sign — no account required. Added as a step in the approval chain above.
               </div>
             </div>
 
-            <div className="dp-modal-footer">
-              <button className="dp-btn dp-btn-ghost" onClick={()=>{setShowRouteModal(false);setSelectedRoute([]);}}>Cancel</button>
-              <button className="dp-btn dp-btn-primary" onClick={saveRoute} disabled={selectedRoute.length===0}>
-                Send to {selectedRoute.length} Recipient{selectedRoute.length!==1?"s":""}
+            {/* Send directly to an email address (off-platform recipient) */}
+            <div style={{marginTop:12,paddingTop:12,borderTop:"1px dashed var(--border)"}}>
+              <button className="dp-btn dp-btn-ghost" style={{width:"100%",justifyContent:"center"}}
+                onClick={()=>{setShowRouteModal(false);setShowEmailSend(true);setEmailMsg(null);setEmailTo("");setEmailNote("");}}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                Send a copy only (no signature) to an email
               </button>
+            </div>
+
+            <div className="dp-modal-footer">
+              <button className="dp-btn dp-btn-ghost" onClick={()=>{setShowRouteModal(false);setSelectedRoute([]);setExternalSigners([]);setExtName("");setExtEmail("");}}>Cancel</button>
+              {(()=>{ const n=selectedRoute.length+externalSigners.length; return (
+                <button className="dp-btn dp-btn-primary" onClick={saveRoute} disabled={n===0}>
+                  Send to {n} Recipient{n!==1?"s":""}
+                </button>
+              );})()}
             </div>
           </div>
         </div>

@@ -19,6 +19,7 @@ const ForgotPassword               = lazy(() => import("./auth/ForgotPassword"))
 const ResetPassword                = lazy(() => import("./auth/ResetPassword"));
 const JoinOrg                      = lazy(() => import("./auth/JoinOrg"));
 const VerifyCertificatePage        = lazy(() => import("./public/VerifyCertificatePage"));
+const SignDocumentPage             = lazy(() => import("./public/SignDocumentPage"));
 const MFASetupInvite               = lazy(() => import("./auth/MFASetupInvite"));
 const IndividualOnboarding         = lazy(() => import("./auth/IndividualOnboarding"));
 const OrganizationOnboarding       = lazy(() => import("./auth/OrganizationOnboarding"));
@@ -87,6 +88,9 @@ function App() {
           {/* Public certificate verification (no login) */}
           <Route path="/verify"                 element={<VerifyCertificatePage />} />
           <Route path="/verify/:certId"         element={<VerifyCertificatePage />} />
+
+          {/* Public guest signing (no login) */}
+          <Route path="/sign/:token"            element={<SignDocumentPage />} />
 
           {/* Onboarding */}
           <Route path="/individual"   element={<ProtectedRoute><IndividualOnboarding /></ProtectedRoute>} />
