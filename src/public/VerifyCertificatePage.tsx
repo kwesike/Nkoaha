@@ -37,7 +37,10 @@ export default function VerifyCertificatePage() {
     try {
       const { data, error } = await supabase.rpc("verify_certificate", { p_cert_id: code });
       const row = Array.isArray(data) ? data[0] : data;
-      setRecord(error || !row ? null : (row as CertRecord));
+      const found = !(error || !row);
+      setRecord(found ? (row as CertRecord) : null);
+      // log the lookup for admin monitoring (best-effort, never blocks the UI)
+      supabase.from("certificate_verifications").insert({ cert_id: code, outcome: found ? "found" : "not_found" }).then(() => {}, () => {});
     } catch { setRecord(null); }
     finally { setChecking(false); setDone(true); }
   }, []);
@@ -50,7 +53,9 @@ export default function VerifyCertificatePage() {
     try {
       const buf = await file.arrayBuffer();
       const hash = await sha256Hex(buf);
-      setFileState(hash === record.fingerprint ? "match" : "mismatch");
+      const ok = hash === record.fingerprint;
+      setFileState(ok ? "match" : "mismatch");
+      supabase.from("certificate_verifications").insert({ cert_id: record.cert_id, outcome: ok ? "file_match" : "file_mismatch" }).then(() => {}, () => {});
     } catch { setFileState("mismatch"); }
   };
 
