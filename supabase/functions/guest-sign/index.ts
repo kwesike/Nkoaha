@@ -45,6 +45,17 @@ async function sha256(s: string): Promise<string> {
 const sixDigit = () => String(Math.floor(100000 + Math.random() * 900000));
 const minsAgo  = (d: string | null, m: number) => !!d && (Date.now() - new Date(d).getTime()) < m * 60000;
 
+// log a suspicious / notable guest event into the shared security_events feed
+// (the admin Security + Monitoring pages read it; IP blocking already applies).
+async function logEvent(eventType: string, email: string, ip: string, metadata: Record<string, unknown>) {
+  try {
+    await db.from("security_events").insert({
+      user_id: null, email: email || null, event_type: eventType,
+      ip_address: ip || null, user_agent: "guest-sign", metadata,
+    });
+  } catch { /* non-fatal */ }
+}
+
 async function routeByToken(token: string) {
   const { data } = await db.from("document_routes").select("*").eq("sign_token", token).maybeSingle();
   return data;
@@ -151,18 +162,23 @@ async function start(token: string) {
 }
 
 // ── ACTION: verify ────────────────────────────────────────────────
-async function verify(token: string, code: string) {
+async function verify(token: string, code: string, ip: string) {
   const route = await routeByToken(token);
-  if (!route) return json({ error: "invalid_link" }, 404);
+  if (!route) { await logEvent("guest_invalid_token", "", ip, { where: "verify" }); return json({ error: "invalid_link" }, 404); }
   if (route.status !== "pending") return json({ error: "not_your_turn" }, 409);
   if (!route.otp_hash || !route.otp_expires_at) return json({ error: "no_code" }, 400);
   if (new Date(route.otp_expires_at) < new Date()) return json({ error: "code_expired" }, 410);
-  if ((route.otp_attempts ?? 0) >= MAX_ATTEMPTS) return json({ error: "too_many_attempts" }, 429);
+  if ((route.otp_attempts ?? 0) >= MAX_ATTEMPTS) {
+    await logEvent("guest_otp_locked", route.recipient_email, ip, { document_id: route.document_id });
+    return json({ error: "too_many_attempts" }, 429);
+  }
 
   const ok = (await sha256(token + ":" + code)) === route.otp_hash;
   if (!ok) {
-    await db.from("document_routes").update({ otp_attempts: (route.otp_attempts ?? 0) + 1 }).eq("id", route.id);
-    return json({ error: "wrong_code", remaining: MAX_ATTEMPTS - (route.otp_attempts ?? 0) - 1 }, 401);
+    const attempts = (route.otp_attempts ?? 0) + 1;
+    await db.from("document_routes").update({ otp_attempts: attempts }).eq("id", route.id);
+    await logEvent("guest_otp_failed", route.recipient_email, ip, { document_id: route.document_id, attempts });
+    return json({ error: "wrong_code", remaining: MAX_ATTEMPTS - attempts }, 401);
   }
 
   await db.from("document_routes").update({ otp_verified_at: new Date().toISOString() }).eq("id", route.id);
@@ -336,6 +352,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: "bad_json" }, 400); }
   const token = String(body.token || "");
   if (!token) return json({ error: "no_token" }, 400);
+  const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || req.headers.get("x-real-ip") || "";
 
   switch (body.action) {
     case "invite": {   // email the signing link to an external signer whose turn it is
@@ -346,7 +363,7 @@ Deno.serve(async (req) => {
       return json({ ok: sent });
     }
     case "start":  return await start(token);
-    case "verify": return await verify(token, String(body.code || ""));
+    case "verify": return await verify(token, String(body.code || ""), ip);
     case "submit": return await submit(token, String(body.signature || ""), String(body.typedName || ""));
     default:       return json({ error: "unknown_action" }, 400);
   }

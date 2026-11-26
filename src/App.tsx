@@ -44,6 +44,7 @@ const AdminSubscriptionsPage       = lazy(() => import("./admin/AdminSubscriptio
 const AdminDocumentsPage           = lazy(() => import("./admin/AdminDocumentsPage"));
 const AdminAuditLogsPage           = lazy(() => import("./admin/AdminAuditlogsPage")); // lowercase 'l' matches filename
 const AdminSecurityPage            = lazy(() => import("./admin/AdminSecurityPage"));
+const AdminMonitoringPage          = lazy(() => import("./admin/AdminMonitoringPage"));
 const AdminWebsitePage             = lazy(() => import("./admin/AdminWebsitePage"));
 const SupportInboxPage             = lazy(() => import("./dashboard/support/SupportInboxPage"));
 const AdminTeamPage               = lazy(() => import("./admin/AdminTeamPage"));
@@ -133,6 +134,7 @@ function App() {
           <Route path="/dashboard/admin/documents"       element={<AdminDocumentsPage />} />
           <Route path="/dashboard/admin/audit"           element={<AdminAuditLogsPage />} />
           <Route path="/dashboard/admin/security"        element={<AdminSecurityPage />} />
+          <Route path="/dashboard/admin/monitoring"      element={<AdminMonitoringPage />} />
           <Route path="/dashboard/admin/website"         element={<AdminWebsitePage />} />
           <Route path="/dashboard/admin/team"            element={<AdminTeamPage />} />
           <Route path="/dashboard/admin/settings"        element={<AdminSettingsPage />} />

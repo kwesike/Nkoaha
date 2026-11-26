@@ -163,6 +163,7 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
     "/dashboard/admin/documents":      "Documents",
     "/dashboard/admin/audit":          "Audit Logs",
     "/dashboard/admin/security":       "Security",
+    "/dashboard/admin/monitoring":     "Monitoring",
     "/dashboard/admin/website":        "Website",
     "/dashboard/admin/team":           "Admin Team",
     "/dashboard/admin/notifications":  "Notifications",
@@ -224,6 +225,9 @@ export default function AdminLayout({ children, title }: AdminLayoutProps) {
 
           <NavLink to="/dashboard/admin/security" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
             <NavIcon.Shield/> Security
+          </NavLink>
+          <NavLink to="/dashboard/admin/monitoring" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
+            <NavIcon.Shield/> Monitoring
           </NavLink>
           <NavLink to="/dashboard/admin/website" className={({isActive}) => `adm-nav-link${isActive?" active":""}`}>
             <NavIcon.Globe/> Website
