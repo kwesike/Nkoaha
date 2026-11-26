@@ -5312,7 +5312,7 @@ export default function DocumentsPage() {
 
       {showRouteModal&&(
         <div className="dp-modal-backdrop" onClick={()=>setShowRouteModal(false)}>
-          <div className="dp-modal" onClick={e=>e.stopPropagation()}>
+          <div className="dp-modal" onClick={e=>e.stopPropagation()} style={{maxHeight:"90vh",overflowY:"auto"}}>
             <h3>Establish Routing</h3>
             <p className="dp-modal-sub">
               Click users to add them in approval order. The <strong>last person</strong> selected is the final approver and can print or save the document.
